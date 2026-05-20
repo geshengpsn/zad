@@ -1,5 +1,6 @@
 const std = @import("std");
-const DAGNode = @import("../dag.zig").DAGNode;
+const dag_mod = @import("../dag.zig");
+const DAGNode = dag_mod.DAGNode;
 const Builder = @import("../dag_builder.zig").Builder;
 const Op1 = @import("../dag.zig").Op1;
 
@@ -26,6 +27,7 @@ fn inner_op1_node(comptime T: type, node: DAGNode(T)) usize {
 }
 
 fn has_pattern(comptime T: type, comptime dag: []const DAGNode(T), comptime outer: Op1, comptime inner: Op1) bool {
+    @setEvalBranchQuota(dag.len);
     for (dag) |node| {
         switch (node) {
             .op1 => |op1| {
@@ -38,6 +40,7 @@ fn has_pattern(comptime T: type, comptime dag: []const DAGNode(T), comptime oute
 }
 
 fn pattern_index(comptime T: type, comptime dag: []const DAGNode(T), comptime outer: Op1, comptime inner: Op1) ?usize {
+    @setEvalBranchQuota(dag.len);
     for (dag, 0..) |node, i| {
         switch (node) {
             .op1 => |op1| {
@@ -116,7 +119,7 @@ fn apply_op1_simplify(comptime T: type, comptime dag: []const DAGNode(T), compti
     inline for (result, 0..) |node, i| {
         result[i] = switch (node) {
             .op1 => |op1| DAGNode(T){ .op1 = .{ .node = resolve_map(&map, op1.node), .op = op1.op } },
-            .op2 => |op2| DAGNode(T){ .op2 = .{ .lhs = resolve_map(&map, op2.lhs), .rhs = resolve_map(&map, op2.rhs), .op = op2.op } },
+            .op2 => |op2| dag_mod.op2_node(T, resolve_map(&map, op2.lhs), resolve_map(&map, op2.rhs), op2.op),
             .output => |output| DAGNode(T){ .output = .{ .index = output.index, .node = resolve_map(&map, output.node) } },
             else => node,
         };

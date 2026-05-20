@@ -9,9 +9,9 @@ pub fn get_active_nodes(comptime T: type, comptime dag: []const DAGNode(T)) [dag
         const reverse_index = dag.len - i - 1;
         const node = dag[reverse_index];
         switch (node) {
-            .scalar_parameter => {
-                active_nodes_[reverse_index] = true;
-            },
+            // .scalar_parameter => {
+            //     active_nodes_[reverse_index] = true;
+            // },
             .output => |o| {
                 active_nodes_[reverse_index] = true;
                 active_nodes_[o.node] = true;
@@ -67,7 +67,7 @@ fn remove_elements_by_boolean_array(comptime T: type, comptime dag: []const DAGN
             const node = dag[i];
             new_dag[map[i]] = switch (node) {
                 .op1 => |op| DAGNode(T){ .op1 = .{ .node = map[op.node], .op = op.op } },
-                .op2 => |op| DAGNode(T){ .op2 = .{ .lhs = map[op.lhs], .rhs = map[op.rhs], .op = op.op } },
+                .op2 => |op| dag_mod.op2_node(T, map[op.lhs], map[op.rhs], op.op),
                 .output => |o| DAGNode(T){ .output = .{ .node = map[o.node], .index = o.index } },
                 else => node,
             };
@@ -158,6 +158,21 @@ test "deadcode_elimination" {
     for (0..expect_dag.len) |i| {
         try std.testing.expectEqual(expect_dag[i], new_dag[i]);
     }
+}
+
+test "deadcode normalizes commutative op2 after reindex" {
+    const reindex_dag = [_]DAGNode(f64){
+        .{ .scalar_parameter = 0 },
+        .{ .scalar_parameter = 1 },
+        .{ .scalar_parameter = 2 },
+        .{ .op2 = .{ .lhs = 1, .rhs = 2, .op = .mul } },
+        .{ .output = .{ .index = 0, .node = 3 } },
+    };
+    const result = deadcode_elimination(f64, &reindex_dag);
+    try std.testing.expectEqual(
+        DAGNode(f64){ .op2 = .{ .lhs = 0, .rhs = 1, .op = .mul } },
+        result[2],
+    );
 }
 
 test "has_deadcode" {

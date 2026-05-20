@@ -152,6 +152,17 @@ test "has_common_subexpression" {
         break :blk b.dag();
     };
     try std.testing.expectEqual(has_common_subexpression(f64, &test_dag2), true);
+    const test_dag3 = [_]DAGNode(f64){
+        .{ .scalar_constant = 2 },
+        .{ .scalar_constant = 1 },
+        .{ .output = .{ .index = 0, .node = 1 } },
+        .{ .output = .{ .index = 1, .node = 0 } },
+        .{ .scalar_constant = 1 },
+        .{ .scalar_constant = 2 },
+        .{ .output = .{ .index = 2, .node = 5 } },
+        .{ .output = .{ .index = 3, .node = 4 } },
+    };
+    try std.testing.expectEqual(has_common_subexpression(f64, &test_dag3), true);
 }
 
 pub fn cse(comptime T: type, comptime dag: []const DAGNode(T)) [dag.len]DAGNode(T) {

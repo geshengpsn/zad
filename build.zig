@@ -63,6 +63,22 @@ pub fn build(b: *std.Build) void {
     const bench_asm_step = b.step("bench-asm", "Emit eval benchmark assembly to zig-out/eval-bench.s");
     bench_asm_step.dependOn(&install_bench_asm.step);
 
+    const qp_exe = b.addExecutable(.{
+        .name = "qp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/qp.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zad", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(qp_exe);
+    const qp_run = b.addRunArtifact(qp_exe);
+    const qp_step = b.step("qp", "Run quadratic programming example");
+    qp_step.dependOn(&qp_run.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

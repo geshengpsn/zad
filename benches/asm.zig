@@ -1,17 +1,18 @@
 const zad = @import("zad");
-const DAGNode = zad.DAGNode;
 const eval = zad.eval;
-const f = zad.f;
+const builder = zad.Builder;
 
 const graph = blk: {
-    const x1 = f.x(0);
-    const x2 = f.x(1);
-    const v1 = f.log(&x1);
-    const v2 = f.mul(&x1, &x2);
-    const v3 = f.sin(&x2);
-    const v4 = f.add(&v1, &v2);
-    const g = f.sub(&v4, &v3);
-    break :blk g.dag();
+    var b = builder(f64, 8){};
+    const x1 = b.x(0);
+    const x2 = b.x(1);
+    const v1 = b.log(x1);
+    const v2 = b.mul(x1, x2);
+    const v3 = b.sin(x2);
+    const v4 = b.add(v1, v2);
+    const v5 = b.sub(v4, v3);
+    b.output(v5);
+    break :blk b.dag();
 };
 
 export fn handwritten_eval_ptr(values: [*]const f64) f64 {
@@ -19,5 +20,5 @@ export fn handwritten_eval_ptr(values: [*]const f64) f64 {
 }
 
 export fn generated_eval_ptr(values: [*]const f64) f64 {
-    return eval(&graph, values[0..2]);
+    return eval(f64, &graph, values[0..2]);
 }

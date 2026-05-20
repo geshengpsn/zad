@@ -1,5 +1,6 @@
 const std = @import("std");
-const DAGNode = @import("../dag.zig").DAGNode;
+const dag_mod = @import("../dag.zig");
+const DAGNode = dag_mod.DAGNode;
 const Builder = @import("../dag_builder.zig").Builder;
 
 const op2_simplify = enum {
@@ -56,7 +57,7 @@ fn rewrite_refs(comptime T: type, nodes: []DAGNode(T), map: []const usize) void 
     for (nodes, 0..) |node, i| {
         nodes[i] = switch (node) {
             .op1 => |op1| DAGNode(T){ .op1 = .{ .node = resolve_map(map, op1.node), .op = op1.op } },
-            .op2 => |op2| DAGNode(T){ .op2 = .{ .lhs = resolve_map(map, op2.lhs), .rhs = resolve_map(map, op2.rhs), .op = op2.op } },
+            .op2 => |op2| dag_mod.op2_node(T, resolve_map(map, op2.lhs), resolve_map(map, op2.rhs), op2.op),
             .output => |out| DAGNode(T){ .output = .{ .index = out.index, .node = resolve_map(map, out.node) } },
             else => node,
         };

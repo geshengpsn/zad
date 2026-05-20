@@ -1,5 +1,6 @@
 const std = @import("std");
-const DAGNode = @import("../dag.zig").DAGNode;
+const dag_mod = @import("../dag.zig");
+const DAGNode = dag_mod.DAGNode;
 const Builder = @import("../dag_builder.zig").Builder;
 
 pub fn default_map(comptime size: usize) [size]usize {
@@ -20,7 +21,7 @@ pub fn rewire(comptime T: type, comptime dag: []const DAGNode(T), map: [dag.len]
     inline for (0..dag.len) |i| {
         result[i] = switch (result[i]) {
             .op1 => |op1| DAGNode(T){ .op1 = .{ .node = map[op1.node], .op = op1.op } },
-            .op2 => |op2| DAGNode(T){ .op2 = .{ .lhs = map[op2.lhs], .rhs = map[op2.rhs], .op = op2.op } },
+            .op2 => |op2| dag_mod.op2_node(T, map[op2.lhs], map[op2.rhs], op2.op),
             .output => |output| DAGNode(T){ .output = .{ .index = output.index, .node = map[output.node] } },
             else => result[i],
         };
@@ -49,4 +50,18 @@ test "rewire" {
         break :blk b.dag();
     };
     try std.testing.expectEqualSlices(DAGNode(f64), &expected_dag, &result);
+}
+
+test "rewire normalizes commutative op2" {
+    const test_dag = [_]DAGNode(f64){
+        .{ .scalar_parameter = 0 },
+        .{ .scalar_parameter = 1 },
+        .{ .op2 = .{ .lhs = 0, .rhs = 1, .op = .add } },
+    };
+    const map = [_]usize{ 1, 0, 2 };
+    const result = rewire(f64, &test_dag, map);
+    try std.testing.expectEqual(
+        DAGNode(f64){ .op2 = .{ .lhs = 0, .rhs = 1, .op = .add } },
+        result[2],
+    );
 }

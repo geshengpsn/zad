@@ -29,8 +29,61 @@ pub fn Builder(comptime T: type, comptime capacity: usize) type {
             return index;
         }
 
+        pub fn vec_x(self: *@This(), count: usize) [count]usize {
+            @setEvalBranchQuota(count);
+            var result: [count]usize = undefined;
+            for (0..count) |i| {
+                result[i] = self.x();
+            }
+            return result;
+        }
+
         pub fn c(self: *@This(), value: T) usize {
             return self.append(.{ .scalar_constant = value });
+        }
+
+        pub fn vec_c(self: *@This(), values: []const T) [values.len]usize {
+            @setEvalBranchQuota(values.len);
+            var result: [values.len]usize = undefined;
+            for (0..values.len) |i| {
+                result[i] = self.c(values[i]);
+            }
+            return result;
+        }
+
+        pub fn mat_c(self: *@This(), rows: usize, cols: usize, values: []const T) [rows * cols]usize {
+            @setEvalBranchQuota(rows * cols);
+            var result: [rows * cols]usize = undefined;
+            for (0..rows) |i| {
+                for (0..cols) |j| {
+                    result[i * cols + j] = self.c(values[i * cols + j]);
+                }
+            }
+            return result;
+        }
+
+        pub fn mat_mul(
+            self: *@This(),
+            rows: usize,
+            inner: usize,
+            cols: usize,
+            lhs: []const usize,
+            rhs: []const usize,
+        ) [rows * cols]usize {
+            @setEvalBranchQuota(rows * cols * inner);
+            var result: [rows * cols]usize = undefined;
+            for (0..rows) |i| {
+                for (0..cols) |j| {
+                    for (0..inner) |k| {
+                        if (k == 0) {
+                            result[i * cols + j] = self.mul(lhs[i * inner + k], rhs[k * cols + j]);
+                        } else {
+                            result[i * cols + j] = self.add(result[i * cols + j], self.mul(lhs[i * inner + k], rhs[k * cols + j]));
+                        }
+                    }
+                }
+            }
+            return result;
         }
 
         pub fn op1(self: *@This(), node: usize, op: Op1) usize {
@@ -38,7 +91,7 @@ pub fn Builder(comptime T: type, comptime capacity: usize) type {
         }
 
         pub fn op2(self: *@This(), lhs: usize, rhs: usize, op: Op2) usize {
-            return self.append(.{ .op2 = .{ .lhs = lhs, .rhs = rhs, .op = op } });
+            return self.append(dag_mod.op2_node(T, lhs, rhs, op));
         }
 
         pub fn output(self: *@This(), node: usize) void {

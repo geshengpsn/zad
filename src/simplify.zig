@@ -18,9 +18,25 @@ test {
     _ = rewire_mod;
 }
 
+fn eval_branch_quota(comptime dag_len: usize) comptime_int {
+    comptime var scale: usize = dag_len;
+    if (scale == 0) scale = 1;
+
+    comptime var quota: usize = scale;
+    quota *= scale;
+    quota *= scale;
+    quota *= 100;
+    return @max(quota, 100_000);
+}
+
 fn simplify_result(comptime T: type, comptime dag: []const DAGNode(T)) type {
+    @setEvalBranchQuota(eval_branch_quota(dag.len));
     var result = dag;
-    while (true) {
+    for (0..dag.len) |_| {
+        if (deadcode_mod.has_deadcode(T, result)) {
+            result = &deadcode_mod.deadcode_elimination(T, result);
+            continue;
+        }
         if (constant_fold_mod.has_unfold_constant(T, result)) {
             result = &constant_fold_mod.constant_fold(T, result);
             continue;
@@ -92,9 +108,13 @@ fn simplify_result(comptime T: type, comptime dag: []const DAGNode(T)) type {
 }
 
 fn simplify_impl(comptime T: type, comptime dag: []const DAGNode(T)) simplify_result(T, dag) {
-    // if (max_iterations == 0) @compileError("simplify did not converge");
+    @setEvalBranchQuota(eval_branch_quota(dag.len));
     var result = dag;
-    while (true) {
+    for (0..dag.len) |_| {
+        if (deadcode_mod.has_deadcode(T, result)) {
+            result = &deadcode_mod.deadcode_elimination(T, result);
+            continue;
+        }
         if (constant_fold_mod.has_unfold_constant(T, result)) {
             result = &constant_fold_mod.constant_fold(T, result);
             continue;
@@ -165,8 +185,8 @@ fn simplify_impl(comptime T: type, comptime dag: []const DAGNode(T)) simplify_re
     return reduced;
 }
 
-fn simplify(comptime T: type, comptime dag: []const DAGNode(T)) simplify_result(T, dag) {
-    @setEvalBranchQuota(10000);
+pub fn simplify(comptime T: type, comptime dag: []const DAGNode(T)) simplify_result(T, dag) {
+    @setEvalBranchQuota(eval_branch_quota(dag.len));
     return simplify_impl(T, dag);
 }
 
@@ -191,7 +211,6 @@ test "constant fold" {
         b.output(v6);
         break :blk b.dag();
     };
-
     const folded_dag = comptime simplify(f32, &test_dag);
     try std.testing.expectEqualSlices(DAGNode(f32), &folded_dag, &expected_dag);
 }

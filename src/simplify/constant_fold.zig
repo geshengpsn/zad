@@ -37,6 +37,7 @@ pub fn has_unfold_constant(comptime T: type, dag: []const DAGNode(T)) bool {
 
 // constant_fold always returns dag with deadcode
 pub fn constant_fold(comptime T: type, comptime dag: []const DAGNode(T)) [dag.len]DAGNode(T) {
+    @setEvalBranchQuota(dag.len * 2);
     var result: [dag.len]DAGNode(T) = undefined;
     for (dag, 0..) |node, i| {
         result[i] = node;

@@ -38,6 +38,27 @@ pub fn DAGNode(comptime T: type) type {
     };
 }
 
+pub fn op2_node(comptime T: type, lhs: usize, rhs: usize, op: Op2) DAGNode(T) {
+    return switch (op) {
+        .add, .mul => if (lhs > rhs)
+            .{ .op2 = .{ .lhs = rhs, .rhs = lhs, .op = op } }
+        else
+            .{ .op2 = .{ .lhs = lhs, .rhs = rhs, .op = op } },
+        else => .{ .op2 = .{ .lhs = lhs, .rhs = rhs, .op = op } },
+    };
+}
+
+test "op2_node normalizes commutative operands" {
+    try std.testing.expectEqual(
+        DAGNode(f64){ .op2 = .{ .lhs = 2, .rhs = 5, .op = .add } },
+        op2_node(f64, 5, 2, .add),
+    );
+    try std.testing.expectEqual(
+        DAGNode(f64){ .op2 = .{ .lhs = 5, .rhs = 2, .op = .sub } },
+        op2_node(f64, 5, 2, .sub),
+    );
+}
+
 fn validate_node_ref(comptime node_index: usize, comptime ref_index: usize, comptime label: []const u8) void {
     if (ref_index >= node_index) {
         @compileError("node " ++ std.fmt.comptimePrint("{}", .{node_index}) ++ " has invalid " ++ label ++ " reference " ++ std.fmt.comptimePrint("{}", .{ref_index}) ++ "; references must point to earlier nodes");
@@ -45,6 +66,7 @@ fn validate_node_ref(comptime node_index: usize, comptime ref_index: usize, comp
 }
 
 pub fn validate_dag(comptime T: type, comptime dag: []const DAGNode(T)) void {
+    @setEvalBranchQuota(dag.len);
     inline for (dag, 0..) |node, i| {
         switch (node) {
             .scalar_constant, .scalar_parameter => {},
@@ -72,6 +94,7 @@ pub fn validate_dag(comptime T: type, comptime dag: []const DAGNode(T)) void {
 }
 
 pub fn input_size(comptime T: type, comptime dag: []const DAGNode(T)) usize {
+    @setEvalBranchQuota(dag.len);
     var size: usize = 0;
     inline for (dag) |node| {
         switch (node) {
@@ -83,6 +106,7 @@ pub fn input_size(comptime T: type, comptime dag: []const DAGNode(T)) usize {
 }
 
 pub fn output_size(comptime T: type, comptime dag: []const DAGNode(T)) usize {
+    @setEvalBranchQuota(dag.len);
     var size: usize = 0;
     inline for (dag) |node| {
         switch (node) {
