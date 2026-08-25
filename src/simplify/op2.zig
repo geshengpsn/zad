@@ -20,23 +20,31 @@ const complex_op2_simplify = enum {
     sin_sq_add_cos_sq, // sin(x) * sin(x) + cos(x) * cos(x) = 1
 };
 
+fn constant_equals(comptime T: type, value: T, comptime expected: comptime_float) bool {
+    return switch (@typeInfo(T)) {
+        .float, .comptime_float => value == @as(T, expected),
+        .vector => |info| @reduce(.And, value == @as(T, @splat(@as(info.child, expected)))),
+        else => false,
+    };
+}
+
 fn is_zero(comptime T: type, node: DAGNode(T)) bool {
     switch (node) {
-        .scalar_constant => |val| return val == 0,
+        .scalar_constant => |val| return constant_equals(T, val, 0),
         else => return false,
     }
 }
 
 fn is_one(comptime T: type, node: DAGNode(T)) bool {
     switch (node) {
-        .scalar_constant => |val| return val == 1,
+        .scalar_constant => |val| return constant_equals(T, val, 1),
         else => return false,
     }
 }
 
 fn is_neg_one(comptime T: type, node: DAGNode(T)) bool {
     switch (node) {
-        .scalar_constant => |val| return val == -1,
+        .scalar_constant => |val| return constant_equals(T, val, -1),
         else => return false,
     }
 }
@@ -76,6 +84,14 @@ fn base_result(comptime T: type, comptime dag: []const DAGNode(T)) struct { node
 test is_zero {
     try std.testing.expect(is_zero(f32, DAGNode(f32){ .scalar_constant = 0 }));
     try std.testing.expect(!is_zero(f32, DAGNode(f32){ .scalar_constant = 1 }));
+    try std.testing.expect(is_zero(
+        @Vector(2, f32),
+        DAGNode(@Vector(2, f32)){ .scalar_constant = @splat(0) },
+    ));
+    try std.testing.expect(!is_zero(
+        @Vector(2, f32),
+        DAGNode(@Vector(2, f32)){ .scalar_constant = .{ 0, 1 } },
+    ));
 }
 
 pub fn has_add_zero(comptime T: type, comptime dag: []const DAGNode(T)) bool {

@@ -3,6 +3,7 @@ const dag_mod = @import("dag.zig");
 const DAGNode = dag_mod.DAGNode;
 const Builder = @import("dag_builder.zig").Builder;
 const eval = @import("eval.zig").eval;
+const simplify = @import("simplify.zig").simplify;
 
 fn dag_constant(comptime T: type, comptime value: comptime_float) T {
     return switch (@typeInfo(T)) {
@@ -625,7 +626,7 @@ test "grad_node_count" {
     try std.testing.expectEqual(@as(usize, 5), grad_node_count(f64, &test_dag));
 }
 
-pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
+pub fn grad_raw(comptime T: type, comptime dag: []const DAGNode(T)) struct {
     rows: usize,
     cols: usize,
     nodes: [grad_node_count(T, dag)]DAGNode(T),
@@ -637,6 +638,26 @@ pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
         .rows = dag_mod.output_size(T, dag),
         .cols = dag_mod.input_size(T, dag),
         .nodes = built.nodes[0..len].*,
+    };
+}
+
+fn simplified_grad_node_count(comptime T: type, comptime dag: []const DAGNode(T)) usize {
+    const raw = comptime grad_raw(T, dag);
+    const simplified = comptime simplify(T, &raw.nodes);
+    return simplified.len;
+}
+
+pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
+    rows: usize,
+    cols: usize,
+    nodes: [simplified_grad_node_count(T, dag)]DAGNode(T),
+} {
+    const raw = comptime grad_raw(T, dag);
+    const nodes = comptime simplify(T, &raw.nodes);
+    return .{
+        .rows = raw.rows,
+        .cols = raw.cols,
+        .nodes = nodes,
     };
 }
 
@@ -663,6 +684,40 @@ test "grad" {
     try std.testing.expectApproxEqAbs(input[0], actual[1], 1e-12);
     try std.testing.expectApproxEqAbs(-1.0, actual[2], 1e-12);
     try std.testing.expectApproxEqAbs(@cos(input[1]), actual[3], 1e-12);
+}
+
+test "grad simplifies automatically and grad_raw preserves generated nodes" {
+    const test_dag = [_]DAGNode(f64){
+        .{ .scalar_parameter = 0 },
+        .{ .output = .{ .index = 0, .node = 0 } },
+    };
+    const raw = comptime grad_raw(f64, &test_dag);
+    const simplified = comptime grad(f64, &test_dag);
+    try std.testing.expect(simplified.nodes.len < raw.nodes.len);
+    try std.testing.expectEqual(raw.rows, simplified.rows);
+    try std.testing.expectEqual(raw.cols, simplified.cols);
+
+    var input = [_]f64{2.0};
+    const actual = eval(f64, &simplified.nodes, &input);
+    try std.testing.expectEqual(@as(f64, 1.0), actual[0]);
+}
+
+test "grad simplifies vector-of-float DAGs" {
+    const V = @Vector(2, f64);
+    const test_dag = comptime blk: {
+        var b = Builder(V, 8){};
+        const x = b.x();
+        const scale = b.c(@as(V, @splat(2.0)));
+        b.output(b.exp(b.mul(x, scale)));
+        break :blk b.dag();
+    };
+    const g = comptime grad(V, &test_dag);
+    var input = [_]V{.{ 1.0, 2.0 }};
+    const actual = eval(V, &g.nodes, &input)[0];
+    const expected: V = @as(V, @splat(2.0)) * @exp(input[0] * @as(V, @splat(2.0)));
+    inline for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], actual[i], 1e-12);
+    }
 }
 
 test "grad reuses needed primal op1" {

@@ -79,6 +79,22 @@ pub fn build(b: *std.Build) void {
     const qp_step = b.step("qp", "Run quadratic programming example");
     qp_step.dependOn(&qp_run.step);
 
+    const qp_to_dag_exe = b.addExecutable(.{
+        .name = "qp-to-dag",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/qp_to_dag.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zad", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(qp_to_dag_exe);
+    const qp_to_dag_run = b.addRunArtifact(qp_to_dag_exe);
+    const qp_to_dag_step = b.step("qp-to-dag", "Run to_dag quadratic programming example");
+    qp_to_dag_step.dependOn(&qp_to_dag_run.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

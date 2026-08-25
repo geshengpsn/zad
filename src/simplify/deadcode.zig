@@ -9,9 +9,9 @@ pub fn get_active_nodes(comptime T: type, comptime dag: []const DAGNode(T)) [dag
         const reverse_index = dag.len - i - 1;
         const node = dag[reverse_index];
         switch (node) {
-            // .scalar_parameter => {
-            //     active_nodes_[reverse_index] = true;
-            // },
+            .scalar_parameter => {
+                active_nodes_[reverse_index] = true;
+            },
             .output => |o| {
                 active_nodes_[reverse_index] = true;
                 active_nodes_[o.node] = true;
@@ -162,10 +162,10 @@ test "deadcode_elimination" {
 
 test "deadcode normalizes commutative op2 after reindex" {
     const reindex_dag = [_]DAGNode(f64){
+        .{ .scalar_constant = 0.0 },
         .{ .scalar_parameter = 0 },
         .{ .scalar_parameter = 1 },
-        .{ .scalar_parameter = 2 },
-        .{ .op2 = .{ .lhs = 1, .rhs = 2, .op = .mul } },
+        .{ .op2 = .{ .lhs = 2, .rhs = 1, .op = .mul } },
         .{ .output = .{ .index = 0, .node = 3 } },
     };
     const result = deadcode_elimination(f64, &reindex_dag);
