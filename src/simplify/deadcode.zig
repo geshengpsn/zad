@@ -1,5 +1,5 @@
 const std = @import("std");
-const Builder = @import("../dag_builder.zig").Builder;
+const DAGWriter = @import("../dag_writer.zig").DAGWriter;
 const dag_mod = @import("../dag.zig");
 const DAGNode = dag_mod.DAGNode;
 
@@ -9,9 +9,9 @@ pub fn get_active_nodes(comptime T: type, comptime dag: []const DAGNode(T)) [dag
         const reverse_index = dag.len - i - 1;
         const node = dag[reverse_index];
         switch (node) {
-            // .scalar_parameter => {
-            //     active_nodes_[reverse_index] = true;
-            // },
+            .scalar_parameter => {
+                active_nodes_[reverse_index] = true;
+            },
             .output => |o| {
                 active_nodes_[reverse_index] = true;
                 active_nodes_[o.node] = true;
@@ -88,7 +88,7 @@ pub fn has_deadcode(comptime T: type, comptime dag: []const DAGNode(T)) bool {
 }
 
 const test_dag = blk: {
-    var b = Builder(f64, 9){};
+    var b = DAGWriter(f64, 9){};
     const x1 = b.x();
     const x2 = b.x();
     const v1 = b.log(x1);
@@ -125,7 +125,7 @@ test "remove_elements" {
     const active_nodes = comptime get_active_nodes(f64, &test_dag);
     const new_dag = remove_elements_by_boolean_array(f64, &test_dag, &active_nodes);
     const expect_dag = comptime blk: {
-        var b = Builder(f64, 9){};
+        var b = DAGWriter(f64, 9){};
         const x1 = b.x();
         const x2 = b.x();
         const v1 = b.log(x1);
@@ -144,7 +144,7 @@ test "remove_elements" {
 test "deadcode_elimination" {
     const new_dag = deadcode_elimination(f64, &test_dag);
     const expect_dag = comptime blk: {
-        var b = Builder(f64, 9){};
+        var b = DAGWriter(f64, 9){};
         const x1 = b.x();
         const x2 = b.x();
         const v1 = b.log(x1);
@@ -162,10 +162,10 @@ test "deadcode_elimination" {
 
 test "deadcode normalizes commutative op2 after reindex" {
     const reindex_dag = [_]DAGNode(f64){
+        .{ .scalar_constant = 0.0 },
         .{ .scalar_parameter = 0 },
         .{ .scalar_parameter = 1 },
-        .{ .scalar_parameter = 2 },
-        .{ .op2 = .{ .lhs = 1, .rhs = 2, .op = .mul } },
+        .{ .op2 = .{ .lhs = 2, .rhs = 1, .op = .mul } },
         .{ .output = .{ .index = 0, .node = 3 } },
     };
     const result = deadcode_elimination(f64, &reindex_dag);
@@ -178,7 +178,7 @@ test "deadcode normalizes commutative op2 after reindex" {
 test "has_deadcode" {
     try std.testing.expectEqual(has_deadcode(f64, &test_dag), true);
     const expect_dag = comptime blk: {
-        var b = Builder(f64, 9){};
+        var b = DAGWriter(f64, 9){};
         const x1 = b.x();
         const x2 = b.x();
         const v1 = b.log(x1);

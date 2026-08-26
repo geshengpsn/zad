@@ -1,7 +1,7 @@
 const std = @import("std");
 const dag_mod = @import("../dag.zig");
 const DAGNode = dag_mod.DAGNode;
-const Builder = @import("../dag_builder.zig").Builder;
+const DAGWriter = @import("../dag_writer.zig").DAGWriter;
 
 const op2_simplify = enum {
     add_zero, // x + 0 = x, 0 + x = x
@@ -20,23 +20,31 @@ const complex_op2_simplify = enum {
     sin_sq_add_cos_sq, // sin(x) * sin(x) + cos(x) * cos(x) = 1
 };
 
+fn constant_equals(comptime T: type, value: T, comptime expected: comptime_float) bool {
+    return switch (@typeInfo(T)) {
+        .float, .comptime_float => value == @as(T, expected),
+        .vector => |info| @reduce(.And, value == @as(T, @splat(@as(info.child, expected)))),
+        else => false,
+    };
+}
+
 fn is_zero(comptime T: type, node: DAGNode(T)) bool {
     switch (node) {
-        .scalar_constant => |val| return val == 0,
+        .scalar_constant => |val| return constant_equals(T, val, 0),
         else => return false,
     }
 }
 
 fn is_one(comptime T: type, node: DAGNode(T)) bool {
     switch (node) {
-        .scalar_constant => |val| return val == 1,
+        .scalar_constant => |val| return constant_equals(T, val, 1),
         else => return false,
     }
 }
 
 fn is_neg_one(comptime T: type, node: DAGNode(T)) bool {
     switch (node) {
-        .scalar_constant => |val| return val == -1,
+        .scalar_constant => |val| return constant_equals(T, val, -1),
         else => return false,
     }
 }
@@ -76,6 +84,14 @@ fn base_result(comptime T: type, comptime dag: []const DAGNode(T)) struct { node
 test is_zero {
     try std.testing.expect(is_zero(f32, DAGNode(f32){ .scalar_constant = 0 }));
     try std.testing.expect(!is_zero(f32, DAGNode(f32){ .scalar_constant = 1 }));
+    try std.testing.expect(is_zero(
+        @Vector(2, f32),
+        DAGNode(@Vector(2, f32)){ .scalar_constant = @splat(0) },
+    ));
+    try std.testing.expect(!is_zero(
+        @Vector(2, f32),
+        DAGNode(@Vector(2, f32)){ .scalar_constant = .{ 0, 1 } },
+    ));
 }
 
 pub fn has_add_zero(comptime T: type, comptime dag: []const DAGNode(T)) bool {
@@ -369,7 +385,7 @@ pub fn self_div(comptime T: type, comptime dag: []const DAGNode(T)) [dag.len]DAG
 
 test "has_add_zero" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         const v3 = b.add(v1, v2);
@@ -379,7 +395,7 @@ test "has_add_zero" {
     try std.testing.expect(has_add_zero(f32, &dag));
 
     const dag_b = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(0.0);
         const v2 = b.x();
         const v3 = b.add(v1, v2);
@@ -391,7 +407,7 @@ test "has_add_zero" {
 
 test "has_sub_zero" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         const v3 = b.sub(v1, v2);
@@ -401,7 +417,7 @@ test "has_sub_zero" {
     try std.testing.expect(has_sub_zero(f32, &dag));
 
     const dag_b = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(0.0);
         const v2 = b.x();
         const v3 = b.sub(v1, v2);
@@ -413,7 +429,7 @@ test "has_sub_zero" {
 
 test "has_self_sub" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.sub(v1, v1);
         b.output(v2);
@@ -424,7 +440,7 @@ test "has_self_sub" {
 
 test "has_mul_zero" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         const v3 = b.mul(v1, v2);
@@ -434,7 +450,7 @@ test "has_mul_zero" {
     try std.testing.expect(has_mul_zero(f32, &dag));
 
     const dag_b = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(0.0);
         const v2 = b.x();
         const v3 = b.mul(v1, v2);
@@ -446,7 +462,7 @@ test "has_mul_zero" {
 
 test "has_mul_one" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(1.0);
         const v3 = b.mul(v1, v2);
@@ -456,7 +472,7 @@ test "has_mul_one" {
     try std.testing.expect(has_mul_one(f32, &dag));
 
     const dag_b = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(1.0);
         const v2 = b.x();
         const v3 = b.mul(v1, v2);
@@ -468,7 +484,7 @@ test "has_mul_one" {
 
 test "has_mul_neg" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(-1.0);
         const v3 = b.mul(v1, v2);
@@ -478,7 +494,7 @@ test "has_mul_neg" {
     try std.testing.expect(has_mul_neg(f32, &dag));
 
     const dag_b = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(-1.0);
         const v2 = b.x();
         const v3 = b.mul(v1, v2);
@@ -490,7 +506,7 @@ test "has_mul_neg" {
 
 test "has_div_one" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(1.0);
         const v3 = b.div(v1, v2);
@@ -502,7 +518,7 @@ test "has_div_one" {
 
 test "has_zero_div" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(0.0);
         const v2 = b.x();
         const v3 = b.div(v1, v2);
@@ -514,7 +530,7 @@ test "has_zero_div" {
 
 test "has_self_div" {
     const dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.div(v1, v1);
         b.output(v2);
@@ -525,7 +541,7 @@ test "has_self_div" {
 
 test "add_zero" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         const v3 = b.add(v1, v2);
@@ -533,7 +549,7 @@ test "add_zero" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         _ = b.add(v1, v2);
@@ -548,7 +564,7 @@ test "add_zero" {
 
 test "sub_zero" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         const v3 = b.sub(v1, v2);
@@ -556,7 +572,7 @@ test "sub_zero" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         _ = b.sub(v1, v2);
@@ -571,14 +587,14 @@ test "sub_zero" {
 
 test "self_sub" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.sub(v1, v1);
         b.output(v2);
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         _ = b.x();
         const v2 = b.c(0.0);
         b.output(v2);
@@ -592,7 +608,7 @@ test "self_sub" {
 
 test "mul_zero" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         const v3 = b.mul(v1, v2);
@@ -600,7 +616,7 @@ test "mul_zero" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(0.0);
         _ = b.mul(v1, v2);
@@ -615,7 +631,7 @@ test "mul_zero" {
 
 test "mul_one" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(1.0);
         const v3 = b.mul(v1, v2);
@@ -623,7 +639,7 @@ test "mul_one" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(1.0);
         _ = b.mul(v1, v2);
@@ -638,7 +654,7 @@ test "mul_one" {
 
 test "mul_neg" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(-1.0);
         const v3 = b.mul(v1, v2);
@@ -646,7 +662,7 @@ test "mul_neg" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         _ = b.c(-1.0);
         const v3 = b.neg(v1);
@@ -661,7 +677,7 @@ test "mul_neg" {
 
 test "div_one" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(1.0);
         const v3 = b.div(v1, v2);
@@ -669,7 +685,7 @@ test "div_one" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.c(1.0);
         _ = b.div(v1, v2);
@@ -684,7 +700,7 @@ test "div_one" {
 
 test "zero_div" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(0.0);
         const v2 = b.x();
         const v3 = b.div(v1, v2);
@@ -692,7 +708,7 @@ test "zero_div" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.c(0.0);
         const v2 = b.x();
         _ = b.div(v1, v2);
@@ -707,14 +723,14 @@ test "zero_div" {
 
 test "self_div" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         const v1 = b.x();
         const v2 = b.div(v1, v1);
         b.output(v2);
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 10){};
+        var b = DAGWriter(f32, 10){};
         _ = b.x();
         const v2 = b.c(1.0);
         b.output(v2);

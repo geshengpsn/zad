@@ -1,23 +1,18 @@
 const std = @import("std");
 const zad = @import("zad");
-const DAGNode = zad.DAGNode;
-const eval = zad.eval;
-const builder = zad.Builder;
+const Scalar = zad.Scalar(f64);
 
 const iterations = 20_000_000;
 
-const graph = blk: {
-    var b = builder(f64, 8){};
-    const x1 = b.x(0);
-    const x2 = b.x(1);
-    const v1 = b.log(x1);
-    const v2 = b.mul(x1, x2);
-    const v3 = b.sin(x2);
-    const v4 = b.add(v1, v2);
-    const v5 = b.sub(v4, v3);
-    b.output(v5);
-    break :blk b.dag();
-};
+fn expression(x: *const Scalar, y: *const Scalar) Scalar {
+    const log_x = x.log();
+    const product = x.mul(y);
+    const sin_y = y.sin();
+    const sum = log_x.add(&product);
+    return sum.sub(&sin_y);
+}
+
+const graph = zad.to_dag(f64, expression);
 
 fn nowNs(io: std.Io) i96 {
     return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
@@ -28,7 +23,7 @@ noinline fn handwritten_eval(values: []const f64) f64 {
 }
 
 noinline fn generated_eval(values: []const f64) f64 {
-    return eval(f64, &graph, values);
+    return zad.eval(f64, &graph, values)[0];
 }
 
 fn runBench(io: std.Io, comptime name: []const u8, func: *const fn ([]const f64) f64) !void {

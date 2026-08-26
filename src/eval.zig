@@ -4,7 +4,7 @@ const DAGNode = dag_mod.DAGNode;
 const std = @import("std");
 
 pub fn eval(comptime T: type, comptime dag: []const DAGNode(T), inputs: []const T) [output_size(T, dag)]T {
-    @setEvalBranchQuota(100000);
+    @setEvalBranchQuota(dag.len);
     var frame: [dag.len]T = undefined;
     var outputs: [output_size(T, dag)]T = undefined;
     inline for (dag, 0..) |node, i| {

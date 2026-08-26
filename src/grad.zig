@@ -1,8 +1,9 @@
 const std = @import("std");
 const dag_mod = @import("dag.zig");
 const DAGNode = dag_mod.DAGNode;
-const Builder = @import("dag_builder.zig").Builder;
+const DAGWriter = @import("dag_writer.zig").DAGWriter;
 const eval = @import("eval.zig").eval;
+const simplify = @import("simplify.zig").simplify;
 
 fn dag_constant(comptime T: type, comptime value: comptime_float) T {
     return switch (@typeInfo(T)) {
@@ -38,7 +39,7 @@ fn unary_derivative(comptime T: type, b: anytype, op: dag_mod.Op1, node: usize) 
 test "unary_derivative" {
     inline for ([_]dag_mod.Op1{ .neg, .abs, .exp, .log, .sqrt, .sin, .cos, .tan }) |op| {
         const derivative_dag = comptime blk: {
-            var b = Builder(f64, 16){};
+            var b = DAGWriter(f64, 16){};
             const x = b.x();
             const d = unary_derivative(f64, &b, op, x);
             b.output(d);
@@ -88,7 +89,7 @@ fn binary_derivative(comptime T: type, b: anytype, op: dag_mod.Op2, lhs: usize, 
 test "binary_derivative" {
     inline for ([_]dag_mod.Op2{ .add, .sub, .mul, .div }) |op| {
         const derivative_dag = comptime blk: {
-            var b = Builder(f64, 32){};
+            var b = DAGWriter(f64, 32){};
             const x = b.x();
             const y = b.x();
             const d = binary_derivative(f64, &b, op, x, y);
@@ -204,7 +205,7 @@ fn node_is_constant(comptime T: type, b: anytype, index: usize, comptime expecte
 
 test "node_is_constant" {
     comptime {
-        var b = Builder(f64, 4){};
+        var b = DAGWriter(f64, 4){};
         const zero = b.c(0.0);
         const one = b.c(1.0);
         try std.testing.expect(node_is_constant(f64, &b, zero, 0.0));
@@ -220,7 +221,7 @@ fn add_node(comptime T: type, b: anytype, lhs: usize, rhs: usize) usize {
 
 test "add_node" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         const zero = b.c(0.0);
         try std.testing.expectEqual(x, add_node(f64, &b, x, zero));
@@ -241,7 +242,7 @@ fn neg_node(comptime T: type, b: anytype, node: usize, zero: usize) usize {
 
 test "neg_node" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         const zero = b.c(0.0);
         const neg_x = b.neg(x);
@@ -263,7 +264,7 @@ fn mul_node(comptime T: type, b: anytype, lhs: usize, rhs: usize, zero: usize) u
 
 test "mul_node" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         const zero = b.c(0.0);
         const one = b.c(1.0);
@@ -284,7 +285,7 @@ fn div_node(comptime T: type, b: anytype, lhs: usize, rhs: usize, zero: usize) u
 
 test "div_node" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         const zero = b.c(0.0);
         const one = b.c(1.0);
@@ -337,7 +338,7 @@ fn apply_unary_adjoint(comptime T: type, b: anytype, derivatives: []usize, op: d
 
 test "apply_unary_adjoint" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 16){};
+        var b = DAGWriter(f64, 16){};
         const x = b.x();
         const y = b.exp(x);
         const zero = b.c(0.0);
@@ -377,7 +378,7 @@ fn apply_binary_adjoint(comptime T: type, b: anytype, derivatives: []usize, op: 
 
 test "apply_binary_adjoint" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 16){};
+        var b = DAGWriter(f64, 16){};
         const x = b.x();
         const y = b.x();
         const zero = b.c(0.0);
@@ -396,7 +397,7 @@ test "apply_binary_adjoint" {
 
 test "add_adjoint" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 16){};
+        var b = DAGWriter(f64, 16){};
         const x = b.x();
         const zero = b.c(0.0);
         const one = b.c(1.0);
@@ -417,7 +418,7 @@ test "add_adjoint" {
 
 test "graph_counts" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         const y = b.x();
         const z = b.add(b.sin(x), y);
@@ -498,7 +499,7 @@ fn grad_primal_needed(comptime T: type, comptime dag: []const DAGNode(T)) [dag.l
 
 test "grad_primal_needed" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 16){};
+        var b = DAGWriter(f64, 16){};
         const x = b.x();
         const y = b.x();
         const unused_output_chain = b.add(x, y);
@@ -513,7 +514,7 @@ test "grad_primal_needed" {
 
 test "output_nodes" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         const y = b.sin(x);
         b.output(y);
@@ -531,7 +532,7 @@ fn build_grad_nodes(comptime T: type, comptime dag: []const DAGNode(T), comptime
     @setEvalBranchQuota(eval_branch_quota(T, dag));
     dag_mod.validate_dag(T, dag);
 
-    var b = Builder(T, capacity){};
+    var b = DAGWriter(T, capacity){};
     var old_to_new: [dag.len]usize = undefined;
     const primal_needed = grad_primal_needed(T, dag);
 
@@ -595,7 +596,7 @@ fn build_grad_nodes(comptime T: type, comptime dag: []const DAGNode(T), comptime
 
 test "build_grad_nodes" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 16){};
+        var b = DAGWriter(f64, 16){};
         const x = b.x();
         const y = b.x();
         b.output(b.mul(x, y));
@@ -625,7 +626,7 @@ test "grad_node_count" {
     try std.testing.expectEqual(@as(usize, 5), grad_node_count(f64, &test_dag));
 }
 
-pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
+pub fn grad_raw(comptime T: type, comptime dag: []const DAGNode(T)) struct {
     rows: usize,
     cols: usize,
     nodes: [grad_node_count(T, dag)]DAGNode(T),
@@ -640,9 +641,29 @@ pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
     };
 }
 
+fn simplified_grad_node_count(comptime T: type, comptime dag: []const DAGNode(T)) usize {
+    const raw = comptime grad_raw(T, dag);
+    const simplified = comptime simplify(T, &raw.nodes);
+    return simplified.len;
+}
+
+pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
+    rows: usize,
+    cols: usize,
+    nodes: [simplified_grad_node_count(T, dag)]DAGNode(T),
+} {
+    const raw = comptime grad_raw(T, dag);
+    const nodes = comptime simplify(T, &raw.nodes);
+    return .{
+        .rows = raw.rows,
+        .cols = raw.cols,
+        .nodes = nodes,
+    };
+}
+
 test "grad" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 16){};
+        var b = DAGWriter(f64, 16){};
         const x = b.x();
         const y = b.x();
         b.output(b.add(b.log(x), b.mul(x, y)));
@@ -665,9 +686,43 @@ test "grad" {
     try std.testing.expectApproxEqAbs(@cos(input[1]), actual[3], 1e-12);
 }
 
+test "grad simplifies automatically and grad_raw preserves generated nodes" {
+    const test_dag = [_]DAGNode(f64){
+        .{ .scalar_parameter = 0 },
+        .{ .output = .{ .index = 0, .node = 0 } },
+    };
+    const raw = comptime grad_raw(f64, &test_dag);
+    const simplified = comptime grad(f64, &test_dag);
+    try std.testing.expect(simplified.nodes.len < raw.nodes.len);
+    try std.testing.expectEqual(raw.rows, simplified.rows);
+    try std.testing.expectEqual(raw.cols, simplified.cols);
+
+    var input = [_]f64{2.0};
+    const actual = eval(f64, &simplified.nodes, &input);
+    try std.testing.expectEqual(@as(f64, 1.0), actual[0]);
+}
+
+test "grad simplifies vector-of-float DAGs" {
+    const V = @Vector(2, f64);
+    const test_dag = comptime blk: {
+        var b = DAGWriter(V, 8){};
+        const x = b.x();
+        const scale = b.c(@as(V, @splat(2.0)));
+        b.output(b.exp(b.mul(x, scale)));
+        break :blk b.dag();
+    };
+    const g = comptime grad(V, &test_dag);
+    var input = [_]V{.{ 1.0, 2.0 }};
+    const actual = eval(V, &g.nodes, &input)[0];
+    const expected: V = @as(V, @splat(2.0)) * @exp(input[0] * @as(V, @splat(2.0)));
+    inline for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], actual[i], 1e-12);
+    }
+}
+
 test "grad reuses needed primal op1" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 8){};
+        var b = DAGWriter(f64, 8){};
         const x = b.x();
         b.output(b.exp(x));
         break :blk b.dag();
