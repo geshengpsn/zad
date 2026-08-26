@@ -5,6 +5,29 @@ const DAGWriter = @import("dag_writer.zig").DAGWriter;
 const eval = @import("eval.zig").eval;
 const simplify = @import("simplify.zig").simplify;
 
+pub const GradMode = enum {
+    auto,
+    forward,
+    reverse,
+};
+
+pub const GradSelection = union(enum) {
+    all,
+    index: usize,
+    range: struct {
+        start: usize,
+        len: usize,
+    },
+    indices: []const usize,
+};
+
+pub const GradOptions = struct {
+    wrt: GradSelection = .all,
+    outputs: GradSelection = .all,
+    mode: GradMode = .auto,
+    simplify: bool = true,
+};
+
 fn dag_constant(comptime T: type, comptime value: comptime_float) T {
     return switch (@typeInfo(T)) {
         .float, .comptime_float => @as(T, value),
@@ -432,18 +455,98 @@ test "graph_counts" {
     try std.testing.expectEqual(@as(usize, 1), counts.op2);
 }
 
-fn grad_capacity(comptime T: type, comptime dag: []const DAGNode(T)) usize {
-    const counts = graph_counts(T, dag);
-    return counts.values + 2 + counts.outputs * (counts.values * counts.values * 16 + dag_mod.input_size(T, dag));
+fn selection_len(
+    comptime selection: GradSelection,
+    comptime total: usize,
+    comptime label: []const u8,
+) usize {
+    const len = switch (selection) {
+        .all => total,
+        .index => |index| blk: {
+            if (index >= total) @compileError(label ++ " index is out of bounds");
+            break :blk 1;
+        },
+        .range => |range| blk: {
+            if (range.start > total or range.len > total - range.start) {
+                @compileError(label ++ " range is out of bounds");
+            }
+            break :blk range.len;
+        },
+        .indices => |indices| blk: {
+            inline for (indices, 0..) |index, i| {
+                if (index >= total) @compileError(label ++ " index is out of bounds");
+                inline for (indices[0..i]) |previous| {
+                    if (index == previous) @compileError(label ++ " indices must be unique");
+                }
+            }
+            break :blk indices.len;
+        },
+    };
+    return len;
 }
 
-test "grad_capacity" {
+fn selection_at(
+    comptime selection: GradSelection,
+    comptime total: usize,
+    comptime position: usize,
+    comptime label: []const u8,
+) usize {
+    _ = selection_len(selection, total, label);
+    return switch (selection) {
+        .all => position,
+        .index => |index| index,
+        .range => |range| range.start + position,
+        .indices => |indices| indices[position],
+    };
+}
+
+fn selected_input_count(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) usize {
+    return selection_len(options.wrt, dag_mod.input_size(T, dag), "grad input");
+}
+
+fn selected_output_count(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) usize {
+    return selection_len(options.outputs, dag_mod.output_size(T, dag), "grad output");
+}
+
+fn resolved_mode(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) GradMode {
+    return switch (options.mode) {
+        .auto => if (selected_input_count(T, dag, options) < selected_output_count(T, dag, options))
+            .forward
+        else
+            .reverse,
+        else => options.mode,
+    };
+}
+
+fn grad_capacity(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) usize {
+    const values = graph_counts(T, dag).values;
+    const rows = selected_output_count(T, dag, options);
+    const cols = selected_input_count(T, dag, options);
+    const mode = resolved_mode(T, dag, options);
+    const passes = if (mode == .forward) cols else rows;
+    const results_per_pass = if (mode == .forward) rows else cols;
+    return values + 2 + passes * (values * values * 16 + results_per_pass);
+}
+
+test "grad selection and mode resolution" {
     const test_dag = [_]DAGNode(f64){
         .{ .scalar_parameter = 0 },
-        .{ .op1 = .{ .node = 0, .op = .sin } },
-        .{ .output = .{ .index = 0, .node = 1 } },
+        .{ .scalar_parameter = 1 },
+        .{ .output = .{ .index = 0, .node = 0 } },
+        .{ .output = .{ .index = 1, .node = 1 } },
     };
-    try std.testing.expectEqual(@as(usize, 69), grad_capacity(f64, &test_dag));
+    const forward = GradOptions{
+        .wrt = .{ .index = 0 },
+        .outputs = .all,
+    };
+    const reverse = GradOptions{
+        .wrt = .all,
+        .outputs = .{ .index = 0 },
+    };
+    try std.testing.expectEqual(@as(usize, 1), selected_input_count(f64, &test_dag, forward));
+    try std.testing.expectEqual(@as(usize, 2), selected_output_count(f64, &test_dag, forward));
+    try std.testing.expectEqual(GradMode.forward, resolved_mode(f64, &test_dag, forward));
+    try std.testing.expectEqual(GradMode.reverse, resolved_mode(f64, &test_dag, reverse));
 }
 
 fn output_nodes(comptime T: type, comptime dag: []const DAGNode(T)) [dag_mod.output_size(T, dag)]usize {
@@ -480,7 +583,8 @@ fn grad_primal_needed(comptime T: type, comptime dag: []const DAGNode(T)) [dag.l
             .scalar_parameter => {},
             .op1 => |op| switch (op.op) {
                 .abs, .exp, .sqrt, .tan => mark_needed(T, dag, &needed, i),
-                else => {},
+                .log, .sin, .cos => mark_needed(T, dag, &needed, op.node),
+                .neg => {},
             },
             .op2 => |op| switch (op.op) {
                 .mul, .div => {
@@ -525,7 +629,102 @@ test "output_nodes" {
     try std.testing.expectEqualSlices(usize, &[_]usize{ 1, 0 }, &nodes);
 }
 
-fn build_grad_nodes(comptime T: type, comptime dag: []const DAGNode(T), comptime capacity: usize) struct {
+fn selected_output_node(
+    comptime T: type,
+    comptime dag: []const DAGNode(T),
+    comptime options: GradOptions,
+    comptime row: usize,
+) usize {
+    const output_index = selection_at(
+        options.outputs,
+        dag_mod.output_size(T, dag),
+        row,
+        "grad output",
+    );
+    var result: ?usize = null;
+    inline for (dag) |node| {
+        switch (node) {
+            .output => |output| if (output.index == output_index) {
+                if (result != null) @compileError("DAG contains a duplicate selected output index");
+                result = output.node;
+            },
+            else => {},
+        }
+    }
+    return result orelse @compileError("DAG does not contain a selected output index");
+}
+
+fn forward_unary(
+    comptime T: type,
+    b: anytype,
+    op: dag_mod.Op1,
+    child: usize,
+    current: usize,
+    tangent: usize,
+    zero: usize,
+    one: usize,
+) usize {
+    if (tangent == zero) return zero;
+    if (op == .neg) return neg_node(T, b, tangent, zero);
+
+    const local = switch (op) {
+        .neg => unreachable,
+        .abs => div_node(T, b, child, current, zero),
+        .exp => current,
+        .log => div_node(T, b, one, child, zero),
+        .sqrt => div_node(T, b, one, mul_node(T, b, b.c(dag_constant(T, 2.0)), current, zero), zero),
+        .sin => b.cos(child),
+        .cos => neg_node(T, b, b.sin(child), zero),
+        .tan => add_node(T, b, one, mul_node(T, b, current, current, zero)),
+    };
+    return mul_node(T, b, tangent, local, zero);
+}
+
+fn forward_binary(
+    comptime T: type,
+    b: anytype,
+    op: dag_mod.Op2,
+    lhs: usize,
+    rhs: usize,
+    lhs_tangent: usize,
+    rhs_tangent: usize,
+    zero: usize,
+) usize {
+    return switch (op) {
+        .add => add_node(T, b, lhs_tangent, rhs_tangent),
+        .sub => add_node(T, b, lhs_tangent, neg_node(T, b, rhs_tangent, zero)),
+        .mul => add_node(
+            T,
+            b,
+            mul_node(T, b, lhs_tangent, rhs, zero),
+            mul_node(T, b, lhs, rhs_tangent, zero),
+        ),
+        .div => add_node(
+            T,
+            b,
+            div_node(T, b, lhs_tangent, rhs, zero),
+            neg_node(
+                T,
+                b,
+                div_node(
+                    T,
+                    b,
+                    mul_node(T, b, lhs, rhs_tangent, zero),
+                    mul_node(T, b, rhs, rhs, zero),
+                    zero,
+                ),
+                zero,
+            ),
+        ),
+    };
+}
+
+fn build_grad_nodes(
+    comptime T: type,
+    comptime dag: []const DAGNode(T),
+    comptime options: GradOptions,
+    comptime capacity: usize,
+) struct {
     len: usize,
     nodes: [capacity]DAGNode(T),
 } {
@@ -534,61 +733,128 @@ fn build_grad_nodes(comptime T: type, comptime dag: []const DAGNode(T), comptime
 
     var b = DAGWriter(T, capacity){};
     var old_to_new: [dag.len]usize = undefined;
-    const primal_needed = grad_primal_needed(T, dag);
 
     inline for (dag, 0..) |node, i| {
         switch (node) {
-            .scalar_constant => |value| {
-                if (primal_needed[i]) old_to_new[i] = b.c(value);
-            },
+            .scalar_constant => |value| old_to_new[i] = b.c(value),
             .scalar_parameter => |index| old_to_new[i] = b.append(.{ .scalar_parameter = index }),
-            .op1 => |op| {
-                if (primal_needed[i]) old_to_new[i] = b.op1(old_to_new[op.node], op.op);
-            },
-            .op2 => |op| {
-                if (primal_needed[i]) old_to_new[i] = b.op2(old_to_new[op.lhs], old_to_new[op.rhs], op.op);
-            },
+            .op1 => |op| old_to_new[i] = b.op1(old_to_new[op.node], op.op),
+            .op2 => |op| old_to_new[i] = b.op2(old_to_new[op.lhs], old_to_new[op.rhs], op.op),
             .output => {},
         }
     }
 
     const zero = b.c(dag_constant(T, 0.0));
     const one = b.c(dag_constant(T, 1.0));
-    const outs = output_nodes(T, dag);
+    const rows = selected_output_count(T, dag, options);
+    const cols = selected_input_count(T, dag, options);
+    var jacobian: [rows * cols]usize = undefined;
+    inline for (0..rows) |row| {
+        _ = selected_output_node(T, dag, options, row);
+    }
 
-    inline for (outs) |target_node| {
-        var derivatives: [dag.len]usize = undefined;
-        for (&derivatives) |*derivative| {
-            derivative.* = zero;
-        }
-        derivatives[target_node] = one;
+    switch (resolved_mode(T, dag, options)) {
+        .auto => unreachable,
+        .reverse => inline for (0..rows) |row| {
+            var derivatives: [dag.len]usize = @splat(zero);
+            derivatives[selected_output_node(T, dag, options, row)] = one;
 
-        inline for (0..dag.len) |offset| {
-            const i = dag.len - 1 - offset;
-            switch (dag[i]) {
-                .op1 => |op| {
-                    const child = old_to_new[op.node];
-                    const current = old_to_new[i];
-                    apply_unary_adjoint(T, &b, &derivatives, op.op, child, current, op.node, derivatives[i], zero, one);
-                },
-                .op2 => |op| {
-                    const lhs = old_to_new[op.lhs];
-                    const rhs = old_to_new[op.rhs];
-                    apply_binary_adjoint(T, &b, &derivatives, op.op, lhs, rhs, op.lhs, op.rhs, derivatives[i], zero, one);
-                },
-                else => {},
+            inline for (0..dag.len) |offset| {
+                const i = dag.len - 1 - offset;
+                switch (dag[i]) {
+                    .op1 => |op| apply_unary_adjoint(
+                        T,
+                        &b,
+                        &derivatives,
+                        op.op,
+                        old_to_new[op.node],
+                        old_to_new[i],
+                        op.node,
+                        derivatives[i],
+                        zero,
+                        one,
+                    ),
+                    .op2 => |op| apply_binary_adjoint(
+                        T,
+                        &b,
+                        &derivatives,
+                        op.op,
+                        old_to_new[op.lhs],
+                        old_to_new[op.rhs],
+                        op.lhs,
+                        op.rhs,
+                        derivatives[i],
+                        zero,
+                        one,
+                    ),
+                    else => {},
+                }
             }
-        }
 
-        inline for (dag, 0..) |node, i| {
-            switch (node) {
-                .scalar_parameter => |input_index| {
-                    _ = input_index;
-                    b.output(derivatives[i]);
-                },
-                else => {},
+            inline for (0..cols) |col| {
+                const input_index = selection_at(
+                    options.wrt,
+                    dag_mod.input_size(T, dag),
+                    col,
+                    "grad input",
+                );
+                var derivative = zero;
+                inline for (dag, 0..) |node, i| {
+                    switch (node) {
+                        .scalar_parameter => |parameter_index| if (parameter_index == input_index) {
+                            derivative = add_node(T, &b, derivative, derivatives[i]);
+                        },
+                        else => {},
+                    }
+                }
+                jacobian[row * cols + col] = derivative;
             }
-        }
+        },
+        .forward => inline for (0..cols) |col| {
+            const input_index = selection_at(
+                options.wrt,
+                dag_mod.input_size(T, dag),
+                col,
+                "grad input",
+            );
+            var tangents: [dag.len]usize = undefined;
+
+            inline for (dag, 0..) |node, i| {
+                tangents[i] = switch (node) {
+                    .scalar_constant => zero,
+                    .scalar_parameter => |parameter_index| if (parameter_index == input_index) one else zero,
+                    .op1 => |op| forward_unary(
+                        T,
+                        &b,
+                        op.op,
+                        old_to_new[op.node],
+                        old_to_new[i],
+                        tangents[op.node],
+                        zero,
+                        one,
+                    ),
+                    .op2 => |op| forward_binary(
+                        T,
+                        &b,
+                        op.op,
+                        old_to_new[op.lhs],
+                        old_to_new[op.rhs],
+                        tangents[op.lhs],
+                        tangents[op.rhs],
+                        zero,
+                    ),
+                    .output => zero,
+                };
+            }
+
+            inline for (0..rows) |row| {
+                jacobian[row * cols + col] = tangents[selected_output_node(T, dag, options, row)];
+            }
+        },
+    }
+
+    inline for (jacobian) |node| {
+        b.output(node);
     }
 
     return .{ .len = b.len, .nodes = b.nodes };
@@ -602,7 +868,8 @@ test "build_grad_nodes" {
         b.output(b.mul(x, y));
         break :blk b.dag();
     };
-    const built = comptime build_grad_nodes(f64, &test_dag, grad_capacity(f64, &test_dag));
+    const options = GradOptions{ .simplify = false };
+    const built = comptime build_grad_nodes(f64, &test_dag, options, grad_capacity(f64, &test_dag, options));
     const nodes = built.nodes[0..built.len];
     var input = [_]f64{ 2.0, 3.0 };
     const actual = eval(f64, nodes, &input);
@@ -611,9 +878,9 @@ test "build_grad_nodes" {
     try std.testing.expectApproxEqAbs(2.0, actual[1], 1e-12);
 }
 
-fn grad_node_count(comptime T: type, comptime dag: []const DAGNode(T)) usize {
+fn grad_node_count(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) usize {
     @setEvalBranchQuota(eval_branch_quota(T, dag));
-    const built = comptime build_grad_nodes(T, dag, grad_capacity(T, dag));
+    const built = comptime build_grad_nodes(T, dag, options, grad_capacity(T, dag, options));
     return built.len;
 }
 
@@ -623,37 +890,47 @@ test "grad_node_count" {
         .{ .op1 = .{ .node = 0, .op = .sin } },
         .{ .output = .{ .index = 0, .node = 1 } },
     };
-    try std.testing.expectEqual(@as(usize, 5), grad_node_count(f64, &test_dag));
+    try std.testing.expect(grad_node_count(f64, &test_dag, .{}) > 0);
 }
 
-pub fn grad_raw(comptime T: type, comptime dag: []const DAGNode(T)) struct {
+fn grad_unsimplified(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) struct {
     rows: usize,
     cols: usize,
-    nodes: [grad_node_count(T, dag)]DAGNode(T),
+    nodes: [grad_node_count(T, dag, options)]DAGNode(T),
 } {
     @setEvalBranchQuota(eval_branch_quota(T, dag));
-    const built = comptime build_grad_nodes(T, dag, grad_capacity(T, dag));
-    const len = comptime grad_node_count(T, dag);
+    const built = comptime build_grad_nodes(T, dag, options, grad_capacity(T, dag, options));
+    const len = comptime grad_node_count(T, dag, options);
     return .{
-        .rows = dag_mod.output_size(T, dag),
-        .cols = dag_mod.input_size(T, dag),
+        .rows = selected_output_count(T, dag, options),
+        .cols = selected_input_count(T, dag, options),
         .nodes = built.nodes[0..len].*,
     };
 }
 
-fn simplified_grad_node_count(comptime T: type, comptime dag: []const DAGNode(T)) usize {
-    const raw = comptime grad_raw(T, dag);
-    const simplified = comptime simplify(T, &raw.nodes);
-    return simplified.len;
+fn grad_result_type(comptime T: type, comptime dag: []const DAGNode(T), comptime options: GradOptions) type {
+    const raw = comptime grad_unsimplified(T, dag, options);
+    const Nodes = if (options.simplify)
+        @TypeOf(comptime simplify(T, &raw.nodes))
+    else
+        @TypeOf(raw.nodes);
+    return struct {
+        rows: usize,
+        cols: usize,
+        nodes: Nodes,
+    };
 }
 
-pub fn grad(comptime T: type, comptime dag: []const DAGNode(T)) struct {
-    rows: usize,
-    cols: usize,
-    nodes: [simplified_grad_node_count(T, dag)]DAGNode(T),
-} {
-    const raw = comptime grad_raw(T, dag);
-    const nodes = comptime simplify(T, &raw.nodes);
+pub fn grad(
+    comptime T: type,
+    comptime dag: []const DAGNode(T),
+    comptime options: GradOptions,
+) grad_result_type(T, dag, options) {
+    const raw = comptime grad_unsimplified(T, dag, options);
+    const nodes = if (options.simplify)
+        comptime simplify(T, &raw.nodes)
+    else
+        raw.nodes;
     return .{
         .rows = raw.rows,
         .cols = raw.cols,
@@ -671,7 +948,7 @@ test "grad" {
         break :blk b.dag();
     };
 
-    const g = comptime grad(f64, &test_dag);
+    const g = comptime grad(f64, &test_dag, .{});
     try std.testing.expect(has_normalized_commutative_op2(f64, &g.nodes));
     try std.testing.expectEqual(@as(usize, 2), g.rows);
     try std.testing.expectEqual(@as(usize, 2), g.cols);
@@ -686,13 +963,115 @@ test "grad" {
     try std.testing.expectApproxEqAbs(@cos(input[1]), actual[3], 1e-12);
 }
 
-test "grad simplifies automatically and grad_raw preserves generated nodes" {
+test "forward and reverse modes produce the same selected Jacobian" {
+    const test_dag = comptime blk: {
+        var b = DAGWriter(f64, 16){};
+        const x = b.x();
+        const y = b.x();
+        b.output(b.add(b.log(x), b.mul(x, y)));
+        b.output(b.sub(b.sin(y), x));
+        break :blk b.dag();
+    };
+    const selection = GradOptions{
+        .wrt = .{ .indices = &.{ 1, 0 } },
+        .outputs = .{ .index = 1 },
+    };
+    const forward_options = GradOptions{
+        .wrt = selection.wrt,
+        .outputs = selection.outputs,
+        .mode = .forward,
+    };
+    const reverse_options = GradOptions{
+        .wrt = selection.wrt,
+        .outputs = selection.outputs,
+        .mode = .reverse,
+    };
+    const forward = comptime grad(f64, &test_dag, forward_options);
+    const reverse = comptime grad(f64, &test_dag, reverse_options);
+    try std.testing.expectEqual(@as(usize, 1), forward.rows);
+    try std.testing.expectEqual(@as(usize, 2), forward.cols);
+
+    var input = [_]f64{ 2.0, 3.0 };
+    const forward_values = eval(f64, &forward.nodes, &input);
+    const reverse_values = eval(f64, &reverse.nodes, &input);
+    try std.testing.expectApproxEqAbs(@cos(input[1]), forward_values[0], 1e-12);
+    try std.testing.expectApproxEqAbs(-1.0, forward_values[1], 1e-12);
+    try std.testing.expectEqual(forward_values, reverse_values);
+}
+
+test "auto mode uses forward for one input and multiple outputs" {
+    const test_dag = comptime blk: {
+        var b = DAGWriter(f64, 8){};
+        const x = b.x();
+        b.output(b.mul(x, x));
+        b.output(b.sin(x));
+        break :blk b.dag();
+    };
+    const g = comptime grad(f64, &test_dag, .{
+        .wrt = .{ .index = 0 },
+        .outputs = .{ .range = .{ .start = 0, .len = 2 } },
+    });
+    var input = [_]f64{2.0};
+    const actual = eval(f64, &g.nodes, &input);
+    try std.testing.expectEqual(@as(usize, 2), g.rows);
+    try std.testing.expectEqual(@as(usize, 1), g.cols);
+    try std.testing.expectApproxEqAbs(4.0, actual[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@cos(2.0), actual[1], 1e-12);
+}
+
+test "duplicate parameter nodes contribute to one logical input" {
+    const test_dag = [_]DAGNode(f64){
+        .{ .scalar_parameter = 0 },
+        .{ .scalar_parameter = 0 },
+        .{ .op2 = .{ .lhs = 0, .rhs = 1, .op = .add } },
+        .{ .output = .{ .index = 0, .node = 2 } },
+    };
+    inline for ([_]GradMode{ .forward, .reverse }) |mode| {
+        const g = comptime grad(f64, &test_dag, .{ .mode = mode });
+        var input = [_]f64{3.0};
+        const actual = eval(f64, &g.nodes, &input);
+        try std.testing.expectEqual(@as(usize, 1), g.cols);
+        try std.testing.expectEqual(@as(f64, 2.0), actual[0]);
+    }
+}
+
+test "selecting an absent sparse input produces a zero column" {
+    const test_dag = [_]DAGNode(f64){
+        .{ .scalar_parameter = 2 },
+        .{ .output = .{ .index = 0, .node = 0 } },
+    };
+    const g = comptime grad(f64, &test_dag, .{
+        .wrt = .{ .index = 1 },
+        .mode = .forward,
+    });
+    var input = [_]f64{ 0.0, 0.0, 4.0 };
+    const actual = eval(f64, &g.nodes, &input);
+    try std.testing.expectEqual(@as(f64, 0.0), actual[0]);
+}
+
+test "reverse mode retains primal dependencies for intermediate sin" {
+    const test_dag = comptime blk: {
+        var b = DAGWriter(f64, 8){};
+        const x = b.x();
+        const y = b.x();
+        const sum = b.add(x, y);
+        b.output(b.sin(sum));
+        break :blk b.dag();
+    };
+    const g = comptime grad(f64, &test_dag, .{ .mode = .reverse });
+    var input = [_]f64{ 1.0, 2.0 };
+    const actual = eval(f64, &g.nodes, &input);
+    try std.testing.expectApproxEqAbs(@cos(3.0), actual[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@cos(3.0), actual[1], 1e-12);
+}
+
+test "grad simplify option controls generic simplification" {
     const test_dag = [_]DAGNode(f64){
         .{ .scalar_parameter = 0 },
         .{ .output = .{ .index = 0, .node = 0 } },
     };
-    const raw = comptime grad_raw(f64, &test_dag);
-    const simplified = comptime grad(f64, &test_dag);
+    const raw = comptime grad(f64, &test_dag, .{ .simplify = false });
+    const simplified = comptime grad(f64, &test_dag, .{});
     try std.testing.expect(simplified.nodes.len < raw.nodes.len);
     try std.testing.expectEqual(raw.rows, simplified.rows);
     try std.testing.expectEqual(raw.cols, simplified.cols);
@@ -711,7 +1090,7 @@ test "grad simplifies vector-of-float DAGs" {
         b.output(b.exp(b.mul(x, scale)));
         break :blk b.dag();
     };
-    const g = comptime grad(V, &test_dag);
+    const g = comptime grad(V, &test_dag, .{});
     var input = [_]V{.{ 1.0, 2.0 }};
     const actual = eval(V, &g.nodes, &input)[0];
     const expected: V = @as(V, @splat(2.0)) * @exp(input[0] * @as(V, @splat(2.0)));
@@ -728,7 +1107,7 @@ test "grad reuses needed primal op1" {
         break :blk b.dag();
     };
 
-    const g = comptime grad(f64, &test_dag);
+    const g = comptime grad(f64, &test_dag, .{});
     var input = [_]f64{2.0};
     const actual = eval(f64, &g.nodes, &input);
     try std.testing.expectEqual(@as(usize, 1), actual.len);

@@ -16,8 +16,8 @@ fn quadraticProgram(x: *const Vec2) Scalar {
 }
 
 const qp = zad.to_dag(f64, quadraticProgram);
-const qp_grad = zad.grad(f64, &qp);
-const qp_hess = zad.grad(f64, &qp_grad.nodes);
+const qp_grad = zad.grad(f64, &qp, .{});
+const qp_hess = zad.grad(f64, &qp_grad.nodes, .{});
 
 fn qp_func(values: []const f64) f64 {
     return zad.eval(f64, &qp, values)[0];
