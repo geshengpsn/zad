@@ -10,7 +10,6 @@ The core idea is simple: build a computation graph at comptime, transform it at 
 
 - Capacity-free compile-time graph construction with typed `Scalar`, `Vec`, and `Mat` values.
 - Reusable scalar and linear-algebra graph modules.
-- Index-based DAG construction with `Builder` when explicit capacity is useful.
 - Runtime evaluation with `eval`.
 - Reverse-mode automatic differentiation with `grad`.
 - Automatic DAG simplification in `to_dag` and `grad`, with raw variants available.
@@ -21,7 +20,6 @@ The core idea is simple: build a computation graph at comptime, transform it at 
   - constant folding
   - local algebraic rewrites
   - common subexpression elimination
-- Basic vector/matrix builder helpers such as `vec_x`, `mat_c`, and `mat_mul`.
 
 ## Requirements
 
@@ -71,7 +69,7 @@ pub fn main() void {
 
 ## Typed Graph Builder
 
-`Scalar`, `Vec`, and `Mat` contain pointer-based graph nodes instead of DAG indexes. Graph construction therefore does not need a `Builder`, a capacity, explicit input nodes, or explicit output nodes. `to_dag` receives a function, converts it directly to a DAG, and simplifies the result. Use `to_dag_raw` when the unsimplified graph is required.
+`Scalar`, `Vec`, and `Mat` contain pointer-based graph nodes instead of DAG indexes. Graph construction therefore does not need a capacity, explicit input nodes, or explicit output nodes. `to_dag` receives a function, converts it directly to a DAG, and simplifies the result. Use `to_dag_raw` when the unsimplified graph is required.
 
 Function parameters must be `*const Scalar`, `*const Vec`, or `*const Mat`. Parameter declaration order determines DAG input order. Values inside each parameter are flattened as follows:
 
@@ -160,7 +158,7 @@ For a scalar function with `n` inputs, `h.nodes` evaluates to `n * n` outputs in
 
 ## Quadratic Example
 
-`examples/qp.zig` uses the index-based Builder, while `examples/qp_to_dag.zig` uses typed graph values and automatic simplification. Both build:
+`examples/qp.zig` uses typed graph values and automatic simplification to build the model below. `examples/qp_to_dag.zig` additionally compares raw and simplified graph sizes.
 
 ```text
 f(x) = 0.5 * x^T Q x
@@ -212,7 +210,6 @@ The root module exports:
 ```zig
 pub const eval = @import("eval.zig").eval;
 pub const validate_dag = @import("dag.zig").validate_dag;
-pub const Builder = @import("dag_builder.zig").Builder;
 pub const graph_builder = @import("graph_builder.zig");
 pub const GraphNode = graph_builder.Node;
 pub const Scalar = graph_builder.Scalar;

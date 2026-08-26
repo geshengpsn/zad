@@ -1,6 +1,5 @@
 pub const eval = @import("eval.zig").eval;
 pub const validate_dag = @import("dag.zig").validate_dag;
-pub const Builder = @import("dag_builder.zig").Builder;
 pub const grad = @import("grad.zig").grad;
 pub const grad_raw = @import("grad.zig").grad_raw;
 pub const simplify = @import("simplify.zig").simplify;
@@ -14,7 +13,6 @@ pub const to_dag_raw = graph_builder.to_dag_raw;
 test {
     _ = @import("eval.zig");
     _ = @import("dag.zig");
-    _ = @import("dag_builder.zig");
     _ = @import("grad.zig");
     _ = @import("simplify.zig");
     _ = @import("graph_builder.zig");

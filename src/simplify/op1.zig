@@ -1,7 +1,7 @@
 const std = @import("std");
 const dag_mod = @import("../dag.zig");
 const DAGNode = dag_mod.DAGNode;
-const Builder = @import("../dag_builder.zig").Builder;
+const DAGWriter = @import("../dag_writer.zig").DAGWriter;
 const Op1 = @import("../dag.zig").Op1;
 
 const op1_simplify = enum {
@@ -182,7 +182,7 @@ pub fn exp_log(comptime T: type, comptime dag: []const DAGNode(T)) [dag.len]DAGN
 
 test "neg_neg" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.neg(v1);
         const v3 = b.neg(v2);
@@ -191,7 +191,7 @@ test "neg_neg" {
     };
 
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.neg(v1);
         _ = b.neg(v2);
@@ -207,7 +207,7 @@ test "neg_neg" {
 
 test "abs_abs" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.abs(v1);
         const v3 = b.abs(v2);
@@ -215,7 +215,7 @@ test "abs_abs" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.abs(v1);
         _ = b.abs(v2);
@@ -231,7 +231,7 @@ test "abs_abs" {
 
 test "cos_neg" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.neg(v1);
         const v3 = b.cos(v2);
@@ -239,7 +239,7 @@ test "cos_neg" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         _ = b.neg(v1);
         const v3 = b.cos(v1);
@@ -255,7 +255,7 @@ test "cos_neg" {
 
 test "log_exp" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.exp(v1);
         const v3 = b.log(v2);
@@ -263,7 +263,7 @@ test "log_exp" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.exp(v1);
         _ = b.log(v2);
@@ -279,7 +279,7 @@ test "log_exp" {
 
 test "exp_log" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         const v3 = b.exp(v2);
@@ -287,7 +287,7 @@ test "exp_log" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         _ = b.exp(v2);

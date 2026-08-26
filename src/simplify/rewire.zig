@@ -1,7 +1,7 @@
 const std = @import("std");
 const dag_mod = @import("../dag.zig");
 const DAGNode = dag_mod.DAGNode;
-const Builder = @import("../dag_builder.zig").Builder;
+const DAGWriter = @import("../dag_writer.zig").DAGWriter;
 
 pub fn default_map(comptime size: usize) [size]usize {
     var result: [size]usize = undefined;
@@ -31,7 +31,7 @@ pub fn rewire(comptime T: type, comptime dag: []const DAGNode(T), map: [dag.len]
 
 test "rewire" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.neg(v1);
         const v3 = b.neg(v2);
@@ -42,7 +42,7 @@ test "rewire" {
     const result = rewire(f64, &test_dag, map);
 
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.neg(v1);
         _ = b.neg(v2);

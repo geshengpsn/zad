@@ -1,5 +1,5 @@
 const std = @import("std");
-const Builder = @import("../dag_builder.zig").Builder;
+const DAGWriter = @import("../dag_writer.zig").DAGWriter;
 const DAGNode = @import("../dag.zig").DAGNode;
 
 fn is_constant(comptime T: type, node: DAGNode(T)) bool {
@@ -92,7 +92,7 @@ test "is_constant" {
 
 test "has_unfold_constant" {
     const test_dag_a = comptime blk: {
-        var b = Builder(f32, 100){};
+        var b = DAGWriter(f32, 100){};
         const v1 = b.c(1.0);
         const v2 = b.c(2.0);
         _ = b.add(v1, v2);
@@ -100,7 +100,7 @@ test "has_unfold_constant" {
     };
     try std.testing.expect(has_unfold_constant(f32, &test_dag_a));
     const test_dag_b = comptime blk: {
-        var b = Builder(f32, 100){};
+        var b = DAGWriter(f32, 100){};
         const v1 = b.x();
         const v2 = b.x();
         _ = b.add(v1, v2);
@@ -111,7 +111,7 @@ test "has_unfold_constant" {
 
 test "constant_fold" {
     const test_dag_a = comptime blk: {
-        var b = Builder(f32, 100){};
+        var b = DAGWriter(f32, 100){};
         const v1 = b.c(std.math.pi / 2.0);
         const v2 = b.sin(v1);
         const v3 = b.c(1.0);
@@ -122,7 +122,7 @@ test "constant_fold" {
         break :blk b.dag();
     };
     const test_dag_b = comptime blk: {
-        var b = Builder(f32, 100){};
+        var b = DAGWriter(f32, 100){};
         _ = b.c(std.math.pi / 2.0);
         const v2 = b.c(@sin(std.math.pi / 2.0));
         const v3 = b.c(1.0);

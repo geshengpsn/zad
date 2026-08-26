@@ -3,7 +3,7 @@ const Op1 = @import("../dag.zig").Op1;
 const Op2 = @import("../dag.zig").Op2;
 const DAGNode = @import("../dag.zig").DAGNode;
 const output_size = @import("../dag.zig").output_size;
-const Builder = @import("../dag_builder.zig").Builder;
+const DAGWriter = @import("../dag_writer.zig").DAGWriter;
 const wyhash = std.hash.Wyhash;
 
 const exprHash = u64;
@@ -69,7 +69,7 @@ fn dag_hash_array(comptime T: type, comptime dag: []const DAGNode(T)) [dag.len]e
 
 test "dag_hash_array" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         const v3 = b.add(v1, v2);
@@ -132,7 +132,7 @@ pub fn has_common_subexpression(comptime T: type, comptime dag: []const DAGNode(
 
 test "has_common_subexpression" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         const v3 = b.add(v1, v2);
@@ -142,7 +142,7 @@ test "has_common_subexpression" {
     };
     try std.testing.expectEqual(has_common_subexpression(f64, &test_dag), false);
     const test_dag2 = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         const v3 = b.add(v1, v2);
@@ -192,7 +192,7 @@ pub fn cse(comptime T: type, comptime dag: []const DAGNode(T)) [dag.len]DAGNode(
 
 test "cse" {
     const test_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         const v3 = b.add(v1, v2);
@@ -202,7 +202,7 @@ test "cse" {
         break :blk b.dag();
     };
     const expected_dag = comptime blk: {
-        var b = Builder(f64, 100){};
+        var b = DAGWriter(f64, 100){};
         const v1 = b.x();
         const v2 = b.log(v1);
         const v3 = b.add(v1, v2);

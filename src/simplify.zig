@@ -1,6 +1,6 @@
 const std = @import("std");
 const DAGNode = @import("dag.zig").DAGNode;
-const Builder = @import("dag_builder.zig").Builder;
+const DAGWriter = @import("dag_writer.zig").DAGWriter;
 
 const deadcode_mod = @import("simplify/deadcode.zig");
 const constant_fold_mod = @import("simplify/constant_fold.zig");
@@ -192,7 +192,7 @@ pub fn simplify(comptime T: type, comptime dag: []const DAGNode(T)) simplify_res
 
 test "constant fold" {
     const test_dag = comptime blk: {
-        var b = Builder(f32, 100){};
+        var b = DAGWriter(f32, 100){};
         const v1 = b.c(std.math.pi / 2.0);
         const v2 = b.sin(v1);
         const v3 = b.c(1.0);
@@ -204,7 +204,7 @@ test "constant fold" {
     };
 
     const expected_dag = comptime blk: {
-        var b = Builder(f32, 100){};
+        var b = DAGWriter(f32, 100){};
         const v4 = b.c(@sin(std.math.pi / 2.0) + 1.0);
         const v5 = b.x();
         const v6 = b.mul(v5, v4);
