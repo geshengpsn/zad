@@ -79,10 +79,10 @@ pub fn build(b: *std.Build) void {
     const qp_step = b.step("qp", "Run quadratic programming example");
     qp_step.dependOn(&qp_run.step);
 
-    const qp_to_dag_exe = b.addExecutable(.{
-        .name = "qp-to-dag",
+    const partial_grad_exe = b.addExecutable(.{
+        .name = "partial-grad",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/qp_to_dag.zig"),
+            .root_source_file = b.path("examples/partial_grad.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -90,10 +90,10 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    b.installArtifact(qp_to_dag_exe);
-    const qp_to_dag_run = b.addRunArtifact(qp_to_dag_exe);
-    const qp_to_dag_step = b.step("qp-to-dag", "Run to_dag quadratic programming example");
-    qp_to_dag_step.dependOn(&qp_to_dag_run.step);
+    b.installArtifact(partial_grad_exe);
+    const partial_grad_run = b.addRunArtifact(partial_grad_exe);
+    const partial_grad_step = b.step("partial-grad", "Run selected partial gradient example");
+    partial_grad_step.dependOn(&partial_grad_run.step);
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to

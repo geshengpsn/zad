@@ -1,7 +1,10 @@
 pub const eval = @import("eval.zig").eval;
 pub const validate_dag = @import("dag.zig").validate_dag;
-pub const grad = @import("grad.zig").grad;
-pub const grad_raw = @import("grad.zig").grad_raw;
+const grad_mod = @import("grad.zig");
+pub const grad = grad_mod.grad;
+pub const GradOptions = grad_mod.GradOptions;
+pub const GradMode = grad_mod.GradMode;
+pub const GradSelection = grad_mod.GradSelection;
 pub const simplify = @import("simplify.zig").simplify;
 pub const graph_builder = @import("graph_builder.zig");
 pub const GraphNode = graph_builder.Node;
