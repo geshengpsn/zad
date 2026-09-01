@@ -1,22 +1,36 @@
-pub const eval = @import("eval.zig").eval;
-pub const validate_dag = @import("dag.zig").validate_dag;
-const grad_mod = @import("grad.zig");
-pub const grad = grad_mod.grad;
-pub const GradOptions = grad_mod.GradOptions;
-pub const GradMode = grad_mod.GradMode;
-pub const GradSelection = grad_mod.GradSelection;
-pub const simplify = @import("simplify.zig").simplify;
-pub const graph_builder = @import("graph_builder.zig");
-pub const GraphNode = graph_builder.Node;
-pub const Scalar = graph_builder.Scalar;
-pub const Vec = graph_builder.Vec;
-pub const Mat = graph_builder.Mat;
-pub const to_dag = graph_builder.to_dag;
-pub const to_dag_raw = graph_builder.to_dag_raw;
+pub const dag = @import("dag.zig");
+pub const ir = @import("ir.zig");
+pub const ir_opt = @import("ir_opt.zig");
+pub const ir_grad = @import("ir_grad.zig");
+pub const vm = @import("vm.zig");
+pub const compiler = @import("compiler.zig");
+
+pub const Scalar = dag.Scalar;
+pub const Vector = dag.Vector;
+pub const Vec = dag.Vector;
+pub const Matrix = dag.Matrix;
+pub const Mat = dag.Matrix;
+pub const to_dag = dag.toDag;
+
+pub const CompileOptions = compiler.CompileOptions;
+pub const GradOptions = compiler.GradOptions;
+pub const GradMode = compiler.GradMode;
+pub const GradSelection = compiler.GradSelection;
+pub const compile = compiler.compile;
+pub const grad = compiler.grad;
+pub const eval = vm.eval;
+pub const eval_into = vm.evalInto;
+pub const eval_with_workspace = vm.evalWithWorkspace;
+pub const eval_flat = vm.evalFlat;
+pub const eval_flat_into = vm.evalFlatInto;
+pub const eval_flat_with_workspace = vm.evalFlatWithWorkspace;
+pub const Workspace = vm.Workspace;
+
 test {
-    _ = @import("eval.zig");
-    _ = @import("dag.zig");
-    _ = @import("grad.zig");
-    _ = @import("simplify.zig");
-    _ = @import("graph_builder.zig");
+    _ = dag;
+    _ = ir;
+    _ = ir_opt;
+    _ = ir_grad;
+    _ = vm;
+    _ = compiler;
 }

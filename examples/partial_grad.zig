@@ -1,40 +1,32 @@
 const std = @import("std");
 const zad = @import("zad");
 
-const Scalar = zad.Scalar(f64);
-const Vec2 = zad.Vec(f64, 2);
+const Scalar = zad.Scalar(f32);
+const Vec2 = zad.Vec(f32, 2);
 
 fn dotProduct(x: *const Vec2, y: *const Vec2) Scalar {
     return x.dot(y);
 }
 
-const function_dag = zad.to_dag(f64, dotProduct);
-
-// Function inputs are flattened in declaration order:
-// x -> input indices 0..2, y -> input indices 2..4.
-const grad_x = zad.grad(f64, &function_dag, .{
+const program = zad.compile(f32, dotProduct, .{});
+const grad_x = zad.grad(f32, program, .{
     .wrt = .{ .range = .{ .start = 0, .len = 2 } },
     .outputs = .{ .index = 0 },
 });
-
-const grad_y = zad.grad(f64, &function_dag, .{
+const grad_y = zad.grad(f32, program, .{
     .wrt = .{ .range = .{ .start = 2, .len = 2 } },
     .outputs = .{ .index = 0 },
 });
 
 pub fn main() !void {
-    var inputs = [_]f64{
-        1.0, 2.0, // x
-        3.0, 4.0, // y
-    };
+    const inputs = .{ [2]f32{ 1, 2 }, [2]f32{ 3, 4 } };
+    const value = zad.eval(program, inputs);
+    const partial_x = zad.eval(grad_x, inputs);
+    const partial_y = zad.eval(grad_y, inputs);
 
-    const value = zad.eval(f64, &function_dag, &inputs)[0];
-    const partial_x = zad.eval(f64, &grad_x.nodes, &inputs);
-    const partial_y = zad.eval(f64, &grad_y.nodes, &inputs);
-
-    if (value != 11.0 or
-        !std.mem.eql(f64, &partial_x, &.{ 3.0, 4.0 }) or
-        !std.mem.eql(f64, &partial_y, &.{ 1.0, 2.0 }))
+    if (value != 11 or
+        !std.mem.eql(f32, &partial_x, &.{ 3, 4 }) or
+        !std.mem.eql(f32, &partial_y, &.{ 1, 2 }))
     {
         return error.UnexpectedDerivative;
     }
