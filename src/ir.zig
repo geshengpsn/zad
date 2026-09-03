@@ -19,29 +19,45 @@ const Op2Code = enum {
     atan2,
 };
 
-const IRCode = union(enum) {
-    scalar_constant: f64,
-    scalar_input_index: usize,
-    vec_constant: []const f64,
-    vec_input: struct {
-        input_index: usize,
-        len: usize,
-    },
-    Op1: struct {
-        a: usize,
-        op: Op1Code,
-        len: usize,
-    },
-    Op2: struct {
-        lhs: usize,
-        rhs: usize,
-        op: Op2Code,
-        len: usize,
-    },
-    output: usize,
-};
+fn validateFloatType(comptime T: type) void {
+    switch (T) {
+        f16, f32, f64 => {},
+        else => @compileError("IRCode only supports f16, f32, and f64"),
+    }
+}
 
-fn InputType(comptime ir: []const IRCode) type {
+fn IRCode(comptime T: type) type {
+    validateFloatType(T);
+    return union(enum) {
+        scalar_constant: T,
+        scalar_input_index: usize,
+        vec_constant: []const T,
+        vec_input: struct {
+            input_index: usize,
+            len: usize,
+        },
+        Op1: struct {
+            a: usize,
+            op: Op1Code,
+            len: usize,
+        },
+        Op2: struct {
+            lhs: usize,
+            rhs: usize,
+            op: Op2Code,
+            len: usize,
+        },
+        muladd: struct {
+            a: usize,
+            b: usize,
+            c: usize,
+            len: usize,
+        },
+        output: usize,
+    };
+}
+
+fn InputType(comptime T: type, comptime ir: []const IRCode(T)) type {
     var input_count: usize = 0;
     for (ir) |code| {
         const input_index = switch (code) {
@@ -56,8 +72,8 @@ fn InputType(comptime ir: []const IRCode) type {
     var initialized = [_]bool{false} ** input_count;
     for (ir) |code| {
         const input = switch (code) {
-            .scalar_input_index => |index| .{ .index = index, .type = f64 },
-            .vec_input => |value| .{ .index = value.input_index, .type = @Vector(value.len, f64) },
+            .scalar_input_index => |index| .{ .index = index, .type = T },
+            .vec_input => |value| .{ .index = value.input_index, .type = @Vector(value.len, T) },
             else => continue,
         };
         if (initialized[input.index]) @compileError("duplicate IR input index");
@@ -72,24 +88,24 @@ fn InputType(comptime ir: []const IRCode) type {
 }
 
 test "InputType" {
-    const test_ir = [_]IRCode{
-        IRCode{ .scalar_input_index = 0 },
-        IRCode{ .vec_input = .{ .input_index = 1, .len = 3 } },
-        IRCode{ .scalar_input_index = 2 },
-        IRCode{ .vec_input = .{ .input_index = 3, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
-        IRCode{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
-        IRCode{ .output = 7 },
-        IRCode{ .output = 5 },
+    const test_ir = [_]IRCode(f64){
+        IRCode(f64){ .scalar_input_index = 0 },
+        IRCode(f64){ .vec_input = .{ .input_index = 1, .len = 3 } },
+        IRCode(f64){ .scalar_input_index = 2 },
+        IRCode(f64){ .vec_input = .{ .input_index = 3, .len = 3 } },
+        IRCode(f64){ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
+        IRCode(f64){ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
+        IRCode(f64){ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
+        IRCode(f64){ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
+        IRCode(f64){ .output = 7 },
+        IRCode(f64){ .output = 5 },
     };
-    const ty = InputType(&test_ir);
+    const ty = InputType(f64, &test_ir);
     const expected = @Tuple(&.{ f64, @Vector(3, f64), f64, @Vector(3, f64) });
     if (ty != expected) @compileError("InputType returned an unexpected tuple type");
 }
 
-fn OutputType(comptime ir: []const IRCode) type {
+fn OutputType(comptime T: type, comptime ir: []const IRCode(T)) type {
     var output_count: usize = 0;
     for (ir) |code| {
         if (code == .output) output_count += 1;
@@ -112,11 +128,12 @@ fn OutputType(comptime ir: []const IRCode) type {
             .vec_input => |value| value.len,
             .Op1 => |op| op.len,
             .Op2 => |op| op.len,
+            .muladd => |op| op.len,
             .output => @compileError("IR output cannot reference another output"),
         };
         if (len == 0) @compileError("IR output length must be greater than zero");
 
-        field_types[output_index] = if (len == 1) f64 else @Vector(len, f64);
+        field_types[output_index] = if (len == 1) T else @Vector(len, T);
         output_index += 1;
     }
 
@@ -124,24 +141,24 @@ fn OutputType(comptime ir: []const IRCode) type {
 }
 
 test "OutputType" {
-    const test_ir = [_]IRCode{
-        IRCode{ .scalar_input_index = 0 },
-        IRCode{ .vec_input = .{ .input_index = 1, .len = 3 } },
-        IRCode{ .scalar_input_index = 2 },
-        IRCode{ .vec_input = .{ .input_index = 3, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
-        IRCode{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
-        IRCode{ .output = 7 },
-        IRCode{ .output = 5 },
+    const test_ir = [_]IRCode(f64){
+        .{ .scalar_input_index = 0 },
+        .{ .vec_input = .{ .input_index = 1, .len = 3 } },
+        .{ .scalar_input_index = 2 },
+        .{ .vec_input = .{ .input_index = 3, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
+        .{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
+        .{ .output = 7 },
+        .{ .output = 5 },
     };
-    const ty = OutputType(&test_ir);
+    const ty = OutputType(f64, &test_ir);
     const expected = @Tuple(&.{ f64, @Vector(3, f64) });
     if (ty != expected) @compileError("OutputType returned an unexpected tuple type");
 }
 
-fn Workspace(comptime ir: []const IRCode) type {
+fn Workspace(comptime T: type, comptime ir: []const IRCode(T)) type {
     var value_count: usize = 0;
     for (ir) |code| {
         if (code != .output) value_count += 1;
@@ -151,22 +168,26 @@ fn Workspace(comptime ir: []const IRCode) type {
     var field_index: usize = 0;
     for (ir) |code| {
         const value_type = switch (code) {
-            .scalar_constant, .scalar_input_index => f64,
+            .scalar_constant, .scalar_input_index => T,
             .vec_constant => |value| blk: {
                 if (value.len == 0) @compileError("IR vector length must be greater than zero");
-                break :blk @Vector(value.len, f64);
+                break :blk @Vector(value.len, T);
             },
             .vec_input => |value| blk: {
                 if (value.len == 0) @compileError("IR vector length must be greater than zero");
-                break :blk @Vector(value.len, f64);
+                break :blk @Vector(value.len, T);
             },
             .Op1 => |op| blk: {
                 if (op.len == 0) @compileError("IR operation result length must be greater than zero");
-                break :blk if (op.len == 1) f64 else @Vector(op.len, f64);
+                break :blk if (op.len == 1) T else @Vector(op.len, T);
             },
             .Op2 => |op| blk: {
                 if (op.len == 0) @compileError("IR operation result length must be greater than zero");
-                break :blk if (op.len == 1) f64 else @Vector(op.len, f64);
+                break :blk if (op.len == 1) T else @Vector(op.len, T);
+            },
+            .muladd => |op| blk: {
+                if (op.len == 0) @compileError("IR operation result length must be greater than zero");
+                break :blk if (op.len == 1) T else @Vector(op.len, T);
             },
             .output => continue,
         };
@@ -178,19 +199,19 @@ fn Workspace(comptime ir: []const IRCode) type {
 }
 
 test "Workspace" {
-    const test_ir = [_]IRCode{
-        IRCode{ .scalar_input_index = 0 },
-        IRCode{ .vec_input = .{ .input_index = 1, .len = 3 } },
-        IRCode{ .scalar_input_index = 2 },
-        IRCode{ .vec_input = .{ .input_index = 3, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
-        IRCode{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
-        IRCode{ .output = 7 },
-        IRCode{ .output = 5 },
+    const test_ir = [_]IRCode(f64){
+        .{ .scalar_input_index = 0 },
+        .{ .vec_input = .{ .input_index = 1, .len = 3 } },
+        .{ .scalar_input_index = 2 },
+        .{ .vec_input = .{ .input_index = 3, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
+        .{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
+        .{ .output = 7 },
+        .{ .output = 5 },
     };
-    const ty = Workspace(&test_ir);
+    const ty = Workspace(f64, &test_ir);
     const expected = @Tuple(&.{
         f64,
         @Vector(3, f64),
@@ -204,7 +225,7 @@ test "Workspace" {
     if (ty != expected) @compileError("workspace returned an unexpected tuple type");
 }
 
-fn workspaceIndex(comptime ir: []const IRCode, comptime instruction_index: usize) usize {
+fn workspaceIndex(comptime T: type, comptime ir: []const IRCode(T), comptime instruction_index: usize) usize {
     if (instruction_index >= ir.len) @compileError("IR instruction index is out of bounds");
     if (ir[instruction_index] == .output) @compileError("output instructions do not have workspace values");
 
@@ -215,7 +236,7 @@ fn workspaceIndex(comptime ir: []const IRCode, comptime instruction_index: usize
     return index;
 }
 
-fn evalOp1(comptime Result: type, comptime op: Op1Code, operand: anytype) Result {
+fn evalOp1(comptime T: type, comptime Result: type, comptime op: Op1Code, operand: anytype) Result {
     return switch (op) {
         .neg => -operand,
         .sqrt => @sqrt(operand),
@@ -224,13 +245,21 @@ fn evalOp1(comptime Result: type, comptime op: Op1Code, operand: anytype) Result
         .log => @log(operand),
         .exp => @exp(operand),
         .abs => @abs(operand),
-        .sum => if (@TypeOf(operand) == f64) operand else @reduce(.Add, operand),
+        .sum => if (@TypeOf(operand) == T) operand else @reduce(.Add, operand),
     };
 }
 
-fn evalOp2(comptime Result: type, comptime op: Op2Code, lhs: anytype, rhs: anytype) Result {
-    if (Result == f64) {
-        if (@TypeOf(lhs) != f64 or @TypeOf(rhs) != f64) {
+fn atan2(comptime T: type, y: T, x: T) T {
+    return switch (T) {
+        f16 => @floatCast(std.math.atan2(@as(f32, y), @as(f32, x))),
+        f32, f64 => std.math.atan2(y, x),
+        else => unreachable,
+    };
+}
+
+fn evalOp2(comptime T: type, comptime Result: type, comptime op: Op2Code, lhs: anytype, rhs: anytype) Result {
+    if (Result == T) {
+        if (@TypeOf(lhs) != T or @TypeOf(rhs) != T) {
             @compileError("scalar operation requires scalar operands");
         }
         return switch (op) {
@@ -238,17 +267,17 @@ fn evalOp2(comptime Result: type, comptime op: Op2Code, lhs: anytype, rhs: anyty
             .sub => lhs - rhs,
             .mul => lhs * rhs,
             .div => lhs / rhs,
-            .atan2 => std.math.atan2(lhs, rhs),
+            .atan2 => atan2(T, lhs, rhs),
         };
     }
 
-    const vector_lhs: Result = if (@TypeOf(lhs) == f64)
+    const vector_lhs: Result = if (@TypeOf(lhs) == T)
         @splat(lhs)
     else if (@TypeOf(lhs) == Result)
         lhs
     else
         @compileError("lhs type does not match operation result");
-    const vector_rhs: Result = if (@TypeOf(rhs) == f64)
+    const vector_rhs: Result = if (@TypeOf(rhs) == T)
         @splat(rhs)
     else if (@TypeOf(rhs) == Result)
         rhs
@@ -262,58 +291,104 @@ fn evalOp2(comptime Result: type, comptime op: Op2Code, lhs: anytype, rhs: anyty
         .atan2 => blk: {
             var result: Result = undefined;
             inline for (0..@typeInfo(Result).vector.len) |index| {
-                result[index] = std.math.atan2(vector_lhs[index], vector_rhs[index]);
+                result[index] = atan2(T, vector_lhs[index], vector_rhs[index]);
             }
             break :blk result;
         },
     };
 }
 
-fn evalIRCode(comptime ir: []const IRCode, input: InputType(ir)) OutputType(ir) {
-    var workspace: Workspace(ir) = undefined;
-    var result: OutputType(ir) = undefined;
+fn evalMulAdd(comptime T: type, comptime Result: type, a: anytype, b: anytype, c: anytype) Result {
+    if (Result == T) {
+        if (@TypeOf(a) != T or @TypeOf(b) != T or @TypeOf(c) != T) {
+            @compileError("scalar muladd requires scalar operands");
+        }
+        return @mulAdd(T, a, b, c);
+    }
+
+    const vector_a: Result = if (@TypeOf(a) == T)
+        @splat(a)
+    else if (@TypeOf(a) == Result)
+        a
+    else
+        @compileError("muladd operand a does not match result type");
+    const vector_b: Result = if (@TypeOf(b) == T)
+        @splat(b)
+    else if (@TypeOf(b) == Result)
+        b
+    else
+        @compileError("muladd operand b does not match result type");
+    const vector_c: Result = if (@TypeOf(c) == T)
+        @splat(c)
+    else if (@TypeOf(c) == Result)
+        c
+    else
+        @compileError("muladd operand c does not match result type");
+    return @mulAdd(Result, vector_a, vector_b, vector_c);
+}
+
+fn evalIRCode(comptime T: type, comptime ir: []const IRCode(T), input: InputType(T, ir)) OutputType(T, ir) {
+    var workspace: Workspace(T, ir) = undefined;
+    var result: OutputType(T, ir) = undefined;
     comptime var output_index: usize = 0;
 
     inline for (ir, 0..) |code, instruction_index| {
         switch (code) {
             .scalar_constant => |value| {
-                workspace[comptime workspaceIndex(ir, instruction_index)] = value;
+                workspace[comptime workspaceIndex(T, ir, instruction_index)] = value;
             },
             .scalar_input_index => |index| {
-                workspace[comptime workspaceIndex(ir, instruction_index)] = input[comptime index];
+                workspace[comptime workspaceIndex(T, ir, instruction_index)] = input[comptime index];
             },
             .vec_constant => |value| {
-                const destination = comptime workspaceIndex(ir, instruction_index);
-                const array: [value.len]f64 = value[0..value.len].*;
-                const vector: @Vector(value.len, f64) = array;
+                const destination = comptime workspaceIndex(T, ir, instruction_index);
+                const array: [value.len]T = value[0..value.len].*;
+                const vector: @Vector(value.len, T) = array;
                 workspace[destination] = vector;
             },
             .vec_input => |value| {
-                workspace[comptime workspaceIndex(ir, instruction_index)] = input[comptime value.input_index];
+                workspace[comptime workspaceIndex(T, ir, instruction_index)] = input[comptime value.input_index];
             },
             .Op1 => |op| {
                 if (op.a >= instruction_index) @compileError("Op1 operand must reference an earlier instruction");
-                const destination = comptime workspaceIndex(ir, instruction_index);
-                const operand = comptime workspaceIndex(ir, op.a);
-                workspace[destination] = evalOp1(@TypeOf(workspace[destination]), op.op, workspace[operand]);
+                const destination = comptime workspaceIndex(T, ir, instruction_index);
+                const operand = comptime workspaceIndex(T, ir, op.a);
+                workspace[destination] = evalOp1(T, @TypeOf(workspace[destination]), op.op, workspace[operand]);
             },
             .Op2 => |op| {
                 if (op.lhs >= instruction_index or op.rhs >= instruction_index) {
                     @compileError("Op2 operands must reference earlier instructions");
                 }
-                const destination = comptime workspaceIndex(ir, instruction_index);
-                const lhs = comptime workspaceIndex(ir, op.lhs);
-                const rhs = comptime workspaceIndex(ir, op.rhs);
+                const destination = comptime workspaceIndex(T, ir, instruction_index);
+                const lhs = comptime workspaceIndex(T, ir, op.lhs);
+                const rhs = comptime workspaceIndex(T, ir, op.rhs);
                 workspace[destination] = evalOp2(
+                    T,
                     @TypeOf(workspace[destination]),
                     op.op,
                     workspace[lhs],
                     workspace[rhs],
                 );
             },
+            .muladd => |op| {
+                if (op.a >= instruction_index or op.b >= instruction_index or op.c >= instruction_index) {
+                    @compileError("muladd operands must reference earlier instructions");
+                }
+                const destination = comptime workspaceIndex(T, ir, instruction_index);
+                const a = comptime workspaceIndex(T, ir, op.a);
+                const b = comptime workspaceIndex(T, ir, op.b);
+                const c = comptime workspaceIndex(T, ir, op.c);
+                workspace[destination] = evalMulAdd(
+                    T,
+                    @TypeOf(workspace[destination]),
+                    workspace[a],
+                    workspace[b],
+                    workspace[c],
+                );
+            },
             .output => |index| {
                 if (index >= instruction_index) @compileError("output must reference an earlier instruction");
-                result[output_index] = workspace[comptime workspaceIndex(ir, index)];
+                result[output_index] = workspace[comptime workspaceIndex(T, ir, index)];
                 output_index += 1;
             },
         }
@@ -322,19 +397,19 @@ fn evalIRCode(comptime ir: []const IRCode, input: InputType(ir)) OutputType(ir) 
 }
 
 test "evalIRCode" {
-    const test_ir = [_]IRCode{
-        IRCode{ .scalar_input_index = 0 },
-        IRCode{ .vec_input = .{ .input_index = 1, .len = 3 } },
-        IRCode{ .scalar_input_index = 2 },
-        IRCode{ .vec_input = .{ .input_index = 3, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
-        IRCode{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
-        IRCode{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
-        IRCode{ .output = 7 },
-        IRCode{ .output = 5 },
+    const test_ir = [_]IRCode(f64){
+        .{ .scalar_input_index = 0 },
+        .{ .vec_input = .{ .input_index = 1, .len = 3 } },
+        .{ .scalar_input_index = 2 },
+        .{ .vec_input = .{ .input_index = 3, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 2, .rhs = 3, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 4, .rhs = 5, .op = .mul, .len = 3 } },
+        .{ .Op1 = .{ .a = 6, .op = .sum, .len = 1 } },
+        .{ .output = 7 },
+        .{ .output = 5 },
     };
-    const result = evalIRCode(&test_ir, .{
+    const result = evalIRCode(f64, &test_ir, .{
         0.1,
         @Vector(3, f64){ 0.1, 0.2, 0.3 },
         0.2,
@@ -348,17 +423,17 @@ test "evalIRCode" {
 }
 
 test "evalIRCode builds vec_constant from a constant slice" {
-    const test_ir = [_]IRCode{
-        IRCode{ .vec_constant = &.{ 1.0, 2.0, 3.0 } },
-        IRCode{ .output = 0 },
+    const test_ir = [_]IRCode(f64){
+        .{ .vec_constant = &.{ 1.0, 2.0, 3.0 } },
+        .{ .output = 0 },
     };
 
-    const result = evalIRCode(&test_ir, .{});
+    const result = evalIRCode(f64, &test_ir, .{});
     try std.testing.expectEqual(@Vector(3, f64){ 1.0, 2.0, 3.0 }, result[0]);
 }
 
 test "evalIRCode supports every scalar operation" {
-    const test_ir = [_]IRCode{
+    const test_ir = [_]IRCode(f64){
         .{ .scalar_input_index = 0 },
         .{ .scalar_input_index = 1 },
         .{ .Op1 = .{ .a = 0, .op = .neg, .len = 1 } },
@@ -388,7 +463,7 @@ test "evalIRCode supports every scalar operation" {
         .{ .output = 13 },
         .{ .output = 14 },
     };
-    const result = evalIRCode(&test_ir, .{ 4.0, 2.0 });
+    const result = evalIRCode(f64, &test_ir, .{ 4.0, 2.0 });
     const expected = .{
         -4.0,
         2.0,
@@ -410,7 +485,7 @@ test "evalIRCode supports every scalar operation" {
 }
 
 test "evalIRCode supports vector math and atan2" {
-    const test_ir = [_]IRCode{
+    const test_ir = [_]IRCode(f64){
         .{ .vec_input = .{ .input_index = 0, .len = 3 } },
         .{ .vec_input = .{ .input_index = 1, .len = 3 } },
         .{ .Op1 = .{ .a = 0, .op = .neg, .len = 3 } },
@@ -436,7 +511,7 @@ test "evalIRCode supports vector math and atan2" {
     };
     const lhs = @Vector(3, f64){ 1.0, 4.0, 9.0 };
     const rhs = @Vector(3, f64){ 2.0, 2.0, 2.0 };
-    const result = evalIRCode(&test_ir, .{ lhs, rhs });
+    const result = evalIRCode(f64, &test_ir, .{ lhs, rhs });
     const expected_vectors = .{
         -lhs,
         @sqrt(lhs),
@@ -460,37 +535,113 @@ test "evalIRCode supports vector math and atan2" {
     try std.testing.expectEqual(@as(f64, 14.0), result[9]);
 }
 
+fn testSelectedFloatType(comptime T: type, comptime tolerance: T) !void {
+    const constants = [_]T{ 0.5, 1.0, 1.5 };
+    const test_ir = [_]IRCode(T){
+        .{ .scalar_input_index = 0 },
+        .{ .vec_input = .{ .input_index = 1, .len = 3 } },
+        .{ .vec_constant = &constants },
+        .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 3 } },
+        .{ .Op2 = .{ .lhs = 3, .rhs = 2, .op = .add, .len = 3 } },
+        .{ .Op1 = .{ .a = 4, .op = .sum, .len = 1 } },
+        .{ .output = 5 },
+        .{ .output = 4 },
+    };
+    const input_vector = @Vector(3, T){ 1.0, 2.0, 3.0 };
+    const result = evalIRCode(T, &test_ir, .{ @as(T, 2.0), input_vector });
+    try std.testing.expectApproxEqAbs(@as(T, 15.0), result[0], tolerance);
+    const expected = @Vector(3, T){ 2.5, 5.0, 7.5 };
+    inline for (0..3) |lane| {
+        try std.testing.expectApproxEqAbs(expected[lane], result[1][lane], tolerance);
+    }
+}
+
+test "IRCode supports selectable f16 f32 and f64 types" {
+    try testSelectedFloatType(f16, 1e-2);
+    try testSelectedFloatType(f32, 1e-6);
+    try testSelectedFloatType(f64, 1e-12);
+}
+
+fn testAtan2Type(comptime T: type, comptime tolerance: T) !void {
+    const test_ir = [_]IRCode(T){
+        .{ .scalar_input_index = 0 },
+        .{ .scalar_input_index = 1 },
+        .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .atan2, .len = 1 } },
+        .{ .output = 2 },
+    };
+    const result = evalIRCode(T, &test_ir, .{ @as(T, 2), @as(T, 3) });
+    try std.testing.expectApproxEqAbs(atan2(T, @as(T, 2), @as(T, 3)), result[0], tolerance);
+}
+
+test "atan2 supports every selectable IR float type" {
+    try testAtan2Type(f16, 1e-2);
+    try testAtan2Type(f32, 1e-6);
+    try testAtan2Type(f64, 1e-12);
+}
+
+fn testMulAddType(comptime T: type, comptime tolerance: T) !void {
+    const V = @Vector(3, T);
+    const test_ir = [_]IRCode(T){
+        .{ .scalar_input_index = 0 },
+        .{ .vec_input = .{ .input_index = 1, .len = 3 } },
+        .{ .vec_input = .{ .input_index = 2, .len = 3 } },
+        .{ .muladd = .{ .a = 0, .b = 1, .c = 2, .len = 3 } },
+        .{ .scalar_constant = 2 },
+        .{ .scalar_constant = 3 },
+        .{ .scalar_constant = 4 },
+        .{ .muladd = .{ .a = 4, .b = 5, .c = 6, .len = 1 } },
+        .{ .output = 3 },
+        .{ .output = 7 },
+    };
+    const b = V{ 1, 2, 3 };
+    const c = V{ 4, 5, 6 };
+    const result = evalIRCode(T, &test_ir, .{ @as(T, 2), b, c });
+    const expected_vector = @mulAdd(V, @as(V, @splat(@as(T, 2))), b, c);
+    inline for (0..3) |lane| {
+        try std.testing.expectApproxEqAbs(expected_vector[lane], result[0][lane], tolerance);
+    }
+    try std.testing.expectApproxEqAbs(@as(T, 10), result[1], tolerance);
+}
+
+test "muladd supports scalar vector broadcasting for every float type" {
+    try testMulAddType(f16, 1e-2);
+    try testMulAddType(f32, 1e-6);
+    try testMulAddType(f64, 1e-12);
+}
+
 fn randomNext(state: *u64) u64 {
     state.* = state.* *% 6364136223846793005 +% 1442695040888963407;
     return state.*;
 }
 
-fn RandomIRCase(comptime vec_len: usize, comptime operation_count: usize) type {
+fn RandomIRCase(comptime T: type, comptime vec_len: usize, comptime operation_count: usize) type {
     return struct {
-        ir: [2 + vec_len + 1 + operation_count + 2]IRCode,
-        scalar_input: f64,
-        vector_input: @Vector(vec_len, f64),
-        scalar_output: f64,
-        vector_output: @Vector(vec_len, f64),
+        ir: [2 + vec_len + 1 + operation_count + 2]IRCode(T),
+        scalar_input: T,
+        vector_input: @Vector(vec_len, T),
+        scalar_output: T,
+        vector_output: @Vector(vec_len, T),
     };
 }
 
 fn generateRandomIR(
+    comptime T: type,
     comptime vec_len: usize,
     comptime operation_count: usize,
     comptime seed: u64,
-) RandomIRCase(vec_len, operation_count) {
+) RandomIRCase(T, vec_len, operation_count) {
+    validateFloatType(T);
     if (vec_len == 0) @compileError("random IR vector length must be greater than zero");
 
-    const V = @Vector(vec_len, f64);
+    const V = @Vector(vec_len, T);
     const Value = union(enum) {
-        scalar: f64,
+        scalar: T,
         vector: V,
     };
     const value_count = 2 + vec_len + 1 + operation_count;
 
     var state = seed;
-    var ir: [value_count + 2]IRCode = undefined;
+    var ir: [value_count + 2]IRCode(T) = undefined;
     var values: [value_count]Value = undefined;
     var scalar_indices: [value_count]usize = undefined;
     var vector_indices: [value_count]usize = undefined;
@@ -498,10 +649,10 @@ fn generateRandomIR(
     var vector_count: usize = 0;
     var len: usize = 0;
 
-    const scalar_input = 0.125;
+    const scalar_input: T = 0.125;
     var vector_input: V = undefined;
     inline for (0..vec_len) |lane| {
-        vector_input[lane] = @as(f64, @floatFromInt(lane + 1)) * 0.1;
+        vector_input[lane] = @as(T, @floatFromInt(lane + 1)) * @as(T, 0.1);
     }
 
     ir[len] = .{ .scalar_input_index = 0 };
@@ -518,7 +669,7 @@ fn generateRandomIR(
 
     const constant_start = len;
     inline for (0..vec_len) |_| {
-        const value = @as(f64, @floatFromInt(randomNext(&state) % 9 + 1)) * 0.1;
+        const value = @as(T, @floatFromInt(randomNext(&state) % 9 + 1)) * @as(T, 0.1);
         ir[len] = .{ .scalar_constant = value };
         values[len] = .{ .scalar = value };
         scalar_indices[scalar_count] = len;
@@ -527,7 +678,7 @@ fn generateRandomIR(
     }
 
     const constant_vector = blk: {
-        var result: [vec_len]f64 = undefined;
+        var result: [vec_len]T = undefined;
         inline for (0..vec_len) |lane| {
             result[lane] = values[constant_start + lane].scalar;
         }
@@ -540,7 +691,7 @@ fn generateRandomIR(
     len += 1;
 
     inline for (0..operation_count) |_| {
-        const operation = randomNext(&state) % 10;
+        const operation = randomNext(&state) % 11;
         switch (operation) {
             0, 1 => {
                 const lhs = scalar_indices[randomNext(&state) % scalar_count];
@@ -592,7 +743,7 @@ fn generateRandomIR(
                 const lhs = scalar_indices[randomNext(&state) % scalar_count];
                 const rhs = scalar_indices[randomNext(&state) % scalar_count];
                 ir[len] = .{ .Op2 = .{ .lhs = lhs, .rhs = rhs, .op = .atan2, .len = 1 } };
-                values[len] = .{ .scalar = std.math.atan2(values[lhs].scalar, values[rhs].scalar) };
+                values[len] = .{ .scalar = atan2(T, values[lhs].scalar, values[rhs].scalar) };
                 scalar_indices[scalar_count] = len;
                 scalar_count += 1;
             },
@@ -608,6 +759,15 @@ fn generateRandomIR(
                 const source = vector_indices[randomNext(&state) % vector_count];
                 ir[len] = .{ .Op1 = .{ .a = source, .op = .sum, .len = 1 } };
                 values[len] = .{ .scalar = @reduce(.Add, values[source].vector) };
+                scalar_indices[scalar_count] = len;
+                scalar_count += 1;
+            },
+            10 => {
+                const a = scalar_indices[randomNext(&state) % scalar_count];
+                const b = scalar_indices[randomNext(&state) % scalar_count];
+                const c = scalar_indices[randomNext(&state) % scalar_count];
+                ir[len] = .{ .muladd = .{ .a = a, .b = b, .c = c, .len = 1 } };
+                values[len] = .{ .scalar = @mulAdd(T, values[a].scalar, values[b].scalar, values[c].scalar) };
                 scalar_indices[scalar_count] = len;
                 scalar_count += 1;
             },
@@ -636,11 +796,12 @@ test "random legal IR combinations match progressively generated references" {
     inline for ([_]usize{ 2, 3, 4, 8 }) |vec_len| {
         inline for (0..16) |case_index| {
             const generated = comptime generateRandomIR(
+                f64,
                 vec_len,
                 12,
                 0x9e3779b97f4a7c15 +% case_index *% 0x100000001b3,
             );
-            const result = evalIRCode(&generated.ir, .{
+            const result = evalIRCode(f64, &generated.ir, .{
                 generated.scalar_input,
                 generated.vector_input,
             });
