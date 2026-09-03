@@ -22,10 +22,7 @@ const Op2Code = enum {
 const IRCode = union(enum) {
     scalar_constant: f64,
     scalar_input_index: usize,
-    vec_constant: struct {
-        ptr: usize,
-        len: usize,
-    },
+    vec_constant: []const f64,
     vec_input: struct {
         input_index: usize,
         len: usize,
@@ -218,16 +215,6 @@ fn workspaceIndex(comptime ir: []const IRCode, comptime instruction_index: usize
     return index;
 }
 
-fn instructionIndexForWorkspace(comptime ir: []const IRCode, comptime workspace_index: usize) usize {
-    var value_index: usize = 0;
-    for (ir, 0..) |code, instruction_index| {
-        if (code == .output) continue;
-        if (value_index == workspace_index) return instruction_index;
-        value_index += 1;
-    }
-    @compileError("workspace index is out of bounds");
-}
-
 fn evalOp1(comptime Result: type, comptime op: Op1Code, operand: anytype) Result {
     return switch (op) {
         .neg => -operand,
@@ -297,19 +284,8 @@ fn evalIRCode(comptime ir: []const IRCode, input: InputType(ir)) OutputType(ir) 
             },
             .vec_constant => |value| {
                 const destination = comptime workspaceIndex(ir, instruction_index);
-                if (value.ptr > destination or value.len > destination - value.ptr) {
-                    @compileError("vec_constant range must reference earlier workspace values");
-                }
-
-                var vector: @Vector(value.len, f64) = undefined;
-                inline for (0..value.len) |lane| {
-                    const source = value.ptr + lane;
-                    const source_instruction = comptime instructionIndexForWorkspace(ir, source);
-                    if (ir[source_instruction] != .scalar_constant) {
-                        @compileError("vec_constant range must contain only scalar constants");
-                    }
-                    vector[lane] = workspace[comptime source];
-                }
+                const array: [value.len]f64 = value[0..value.len].*;
+                const vector: @Vector(value.len, f64) = array;
                 workspace[destination] = vector;
             },
             .vec_input => |value| {
@@ -371,13 +347,10 @@ test "evalIRCode" {
     }
 }
 
-test "evalIRCode builds vec_constant from scalar constant workspace range" {
+test "evalIRCode builds vec_constant from a constant slice" {
     const test_ir = [_]IRCode{
-        IRCode{ .scalar_constant = 1.0 },
-        IRCode{ .scalar_constant = 2.0 },
-        IRCode{ .scalar_constant = 3.0 },
-        IRCode{ .vec_constant = .{ .ptr = 0, .len = 3 } },
-        IRCode{ .output = 3 },
+        IRCode{ .vec_constant = &.{ 1.0, 2.0, 3.0 } },
+        IRCode{ .output = 0 },
     };
 
     const result = evalIRCode(&test_ir, .{});
@@ -553,11 +526,14 @@ fn generateRandomIR(
         len += 1;
     }
 
-    var constant_vector: V = undefined;
-    inline for (0..vec_len) |lane| {
-        constant_vector[lane] = values[constant_start + lane].scalar;
-    }
-    ir[len] = .{ .vec_constant = .{ .ptr = constant_start, .len = vec_len } };
+    const constant_vector = blk: {
+        var result: [vec_len]f64 = undefined;
+        inline for (0..vec_len) |lane| {
+            result[lane] = values[constant_start + lane].scalar;
+        }
+        break :blk result;
+    };
+    ir[len] = .{ .vec_constant = &constant_vector };
     values[len] = .{ .vector = constant_vector };
     vector_indices[vector_count] = len;
     vector_count += 1;
