@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const Op1Code = enum {
+pub const Op1Code = union(enum) {
     neg,
     sqrt,
     exp,
@@ -9,14 +9,16 @@ const Op1Code = enum {
     cos,
     abs,
     sum,
+    get: usize,
 };
 
-const Op2Code = enum {
+pub const Op2Code = union(enum) {
     add,
     sub,
     mul,
     div,
     atan2,
+    set: usize,
 };
 
 fn validateFloatType(comptime T: type) void {
@@ -26,7 +28,7 @@ fn validateFloatType(comptime T: type) void {
     }
 }
 
-fn IRCode(comptime T: type) type {
+pub fn IRCode(comptime T: type) type {
     validateFloatType(T);
     return union(enum) {
         scalar_constant: T,
@@ -57,7 +59,7 @@ fn IRCode(comptime T: type) type {
     };
 }
 
-fn InputType(comptime T: type, comptime ir: []const IRCode(T)) type {
+pub fn InputType(comptime T: type, comptime ir: []const IRCode(T)) type {
     var input_count: usize = 0;
     for (ir) |code| {
         const input_index = switch (code) {
@@ -105,7 +107,7 @@ test "InputType" {
     if (ty != expected) @compileError("InputType returned an unexpected tuple type");
 }
 
-fn OutputType(comptime T: type, comptime ir: []const IRCode(T)) type {
+pub fn OutputType(comptime T: type, comptime ir: []const IRCode(T)) type {
     var output_count: usize = 0;
     for (ir) |code| {
         if (code == .output) output_count += 1;
@@ -158,7 +160,7 @@ test "OutputType" {
     if (ty != expected) @compileError("OutputType returned an unexpected tuple type");
 }
 
-fn Workspace(comptime T: type, comptime ir: []const IRCode(T)) type {
+pub fn Workspace(comptime T: type, comptime ir: []const IRCode(T)) type {
     var value_count: usize = 0;
     for (ir) |code| {
         if (code != .output) value_count += 1;
@@ -246,6 +248,13 @@ fn evalOp1(comptime T: type, comptime Result: type, comptime op: Op1Code, operan
         .exp => @exp(operand),
         .abs => @abs(operand),
         .sum => if (@TypeOf(operand) == T) operand else @reduce(.Add, operand),
+        .get => |index| blk: {
+            if (Result != T) @compileError("get must produce a scalar");
+            const operand_info = @typeInfo(@TypeOf(operand));
+            if (operand_info != .vector) @compileError("get requires a vector operand");
+            if (index >= operand_info.vector.len) @compileError("get index is out of bounds");
+            break :blk operand[comptime index];
+        },
     };
 }
 
@@ -258,6 +267,19 @@ fn atan2(comptime T: type, y: T, x: T) T {
 }
 
 fn evalOp2(comptime T: type, comptime Result: type, comptime op: Op2Code, lhs: anytype, rhs: anytype) Result {
+    switch (op) {
+        .set => |index| {
+            if (Result == T) @compileError("set must produce a vector");
+            if (@TypeOf(lhs) != Result) @compileError("set lhs must match the result vector type");
+            if (@TypeOf(rhs) != T) @compileError("set rhs must be a scalar");
+            if (index >= @typeInfo(Result).vector.len) @compileError("set index is out of bounds");
+            var result = lhs;
+            result[comptime index] = rhs;
+            return result;
+        },
+        else => {},
+    }
+
     if (Result == T) {
         if (@TypeOf(lhs) != T or @TypeOf(rhs) != T) {
             @compileError("scalar operation requires scalar operands");
@@ -268,6 +290,7 @@ fn evalOp2(comptime T: type, comptime Result: type, comptime op: Op2Code, lhs: a
             .mul => lhs * rhs,
             .div => lhs / rhs,
             .atan2 => atan2(T, lhs, rhs),
+            .set => unreachable,
         };
     }
 
@@ -295,6 +318,7 @@ fn evalOp2(comptime T: type, comptime Result: type, comptime op: Op2Code, lhs: a
             }
             break :blk result;
         },
+        .set => unreachable,
     };
 }
 
@@ -327,7 +351,7 @@ fn evalMulAdd(comptime T: type, comptime Result: type, a: anytype, b: anytype, c
     return @mulAdd(Result, vector_a, vector_b, vector_c);
 }
 
-fn evalIRCode(comptime T: type, comptime ir: []const IRCode(T), input: InputType(T, ir)) OutputType(T, ir) {
+pub fn evalIRCode(comptime T: type, comptime ir: []const IRCode(T), input: InputType(T, ir)) OutputType(T, ir) {
     var workspace: Workspace(T, ir) = undefined;
     var result: OutputType(T, ir) = undefined;
     comptime var output_index: usize = 0;
@@ -609,6 +633,30 @@ test "muladd supports scalar vector broadcasting for every float type" {
     try testMulAddType(f64, 1e-12);
 }
 
+fn testGetSetType(comptime T: type) !void {
+    const V = @Vector(3, T);
+    const test_ir = [_]IRCode(T){
+        .{ .vec_input = .{ .input_index = 0, .len = 3 } },
+        .{ .scalar_input_index = 1 },
+        .{ .Op1 = .{ .a = 0, .op = .{ .get = 1 }, .len = 1 } },
+        .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .{ .set = 2 }, .len = 3 } },
+        .{ .output = 2 },
+        .{ .output = 3 },
+        .{ .output = 0 },
+    };
+    const source = V{ 1, 2, 3 };
+    const result = evalIRCode(T, &test_ir, .{ source, @as(T, 9) });
+    try std.testing.expectEqual(@as(T, 2), result[0]);
+    try std.testing.expectEqual(V{ 1, 2, 9 }, result[1]);
+    try std.testing.expectEqual(source, result[2]);
+}
+
+test "get and set support every float type and preserve the source vector" {
+    try testGetSetType(f16);
+    try testGetSetType(f32);
+    try testGetSetType(f64);
+}
+
 fn randomNext(state: *u64) u64 {
     state.* = state.* *% 6364136223846793005 +% 1442695040888963407;
     return state.*;
@@ -691,7 +739,7 @@ fn generateRandomIR(
     len += 1;
 
     inline for (0..operation_count) |_| {
-        const operation = randomNext(&state) % 11;
+        const operation = randomNext(&state) % 13;
         switch (operation) {
             0, 1 => {
                 const lhs = scalar_indices[randomNext(&state) % scalar_count];
@@ -770,6 +818,25 @@ fn generateRandomIR(
                 values[len] = .{ .scalar = @mulAdd(T, values[a].scalar, values[b].scalar, values[c].scalar) };
                 scalar_indices[scalar_count] = len;
                 scalar_count += 1;
+            },
+            11 => {
+                const source = vector_indices[randomNext(&state) % vector_count];
+                const index = randomNext(&state) % vec_len;
+                ir[len] = .{ .Op1 = .{ .a = source, .op = .{ .get = index }, .len = 1 } };
+                values[len] = .{ .scalar = values[source].vector[index] };
+                scalar_indices[scalar_count] = len;
+                scalar_count += 1;
+            },
+            12 => {
+                const vector = vector_indices[randomNext(&state) % vector_count];
+                const scalar = scalar_indices[randomNext(&state) % scalar_count];
+                const index = randomNext(&state) % vec_len;
+                ir[len] = .{ .Op2 = .{ .lhs = vector, .rhs = scalar, .op = .{ .set = index }, .len = vec_len } };
+                var result = values[vector].vector;
+                result[index] = values[scalar].scalar;
+                values[len] = .{ .vector = result };
+                vector_indices[vector_count] = len;
+                vector_count += 1;
             },
             else => unreachable,
         }
