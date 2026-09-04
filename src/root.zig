@@ -1,22 +1,25 @@
-pub const eval = @import("eval.zig").eval;
-pub const validate_dag = @import("dag.zig").validate_dag;
-const grad_mod = @import("grad.zig");
-pub const grad = grad_mod.grad;
-pub const GradOptions = grad_mod.GradOptions;
-pub const GradMode = grad_mod.GradMode;
-pub const GradSelection = grad_mod.GradSelection;
-pub const simplify = @import("simplify.zig").simplify;
-pub const graph_builder = @import("graph_builder.zig");
-pub const GraphNode = graph_builder.Node;
-pub const Scalar = graph_builder.Scalar;
-pub const Vec = graph_builder.Vec;
-pub const Mat = graph_builder.Mat;
-pub const to_dag = graph_builder.to_dag;
-pub const to_dag_raw = graph_builder.to_dag_raw;
-test {
-    _ = @import("eval.zig");
-    _ = @import("dag.zig");
-    _ = @import("grad.zig");
-    _ = @import("simplify.zig");
-    _ = @import("graph_builder.zig");
+const ir = @import("ir.zig");
+const hr = @import("hr.zig");
+const simplify = @import("simplify.zig");
+const differentiation = @import("grad.zig");
+const compiler = @import("compile.zig");
+
+pub const Scalar = hr.Scalar;
+pub const Vector = hr.Vector;
+pub const Matrix = hr.Matrix;
+const toIRCode = hr.toIRCode;
+const evalIRCode = ir.evalIRCode;
+const IRBuilder = simplify.Builder;
+const simplifyIR = simplify.simplifyIR;
+pub const gradIR = differentiation.gradIR;
+pub const compile = compiler.compile;
+pub const grad = compiler.grad;
+pub const GradOptions = compiler.GradOptions;
+
+test "all" {
+    _ = ir;
+    _ = hr;
+    _ = simplify;
+    _ = differentiation;
+    _ = compiler;
 }

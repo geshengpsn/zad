@@ -1,88 +1,22 @@
 # zad
 
-`zad` is a small Zig library for building scalar expression DAGs, evaluating them, simplifying them at compile time, and generating Jacobian DAGs with forward- and reverse-mode automatic differentiation.
+`zad` is a compile-time automatic differentiation library for Zig. User functions build a typed tensor DAG, which is lowered to a homogeneous floating-point IR, optimized, differentiated, and executed by a small virtual machine.
 
-Current version: `0.1.0`.
-
-The core idea is simple: build a computation graph at comptime, transform it at comptime, then evaluate the resulting graph at runtime with plain arrays.
+Current version: `0.1.0`. The project targets Zig `0.16.0`.
 
 ## Features
 
-- Capacity-free compile-time graph construction with typed `Scalar`, `Vec`, and `Mat` values.
-- Reusable scalar and linear-algebra graph modules.
-- Runtime evaluation with `eval`.
-- Forward-, reverse-, and automatically selected differentiation modes with `grad`.
-- Automatic DAG simplification in `to_dag` and `grad`, with `to_dag_raw` and a grad option to disable it.
-- Jacobian generation for scalar-output and vector-output functions.
-- Hessian generation by applying `grad` to a gradient DAG.
-- Compile-time simplification passes:
-  - dead-code elimination
-  - constant folding
-  - local algebraic rewrites
-  - common subexpression elimination
+- Capacity-free function-style DAG construction.
+- Distinct `Scalar`, `Vector`, and `Matrix` semantics in the public graph.
+- One homogeneous floating-point type per DAG and IR program.
+- Native tensor IR operations including elementwise operations, dot products, matrix-vector multiplication, outer products, and transposed matrix-vector multiplication.
+- Compile-time forward- and reverse-mode IR differentiation.
+- IR identity rewriting, common-subexpression elimination, and dead-code elimination.
+- A dual-stack VM with dedicated scalar and `@Vector` storage.
+- SIMD tensor kernels by default, with a scalar backend available.
+- First and second derivatives remain tensor IR and can be optimized or differentiated again.
 
-## Requirements
-
-This project currently targets Zig `0.16.0`.
-
-Run tests:
-
-```sh
-zig build test
-```
-
-Run the quadratic example:
-
-```sh
-zig build qp
-```
-
-## Basic Usage
-
-Build a DAG for:
-
-```text
-f(x, y) = log(x) + x * y
-```
-
-```zig
-const std = @import("std");
-const zad = @import("zad");
-
-const Scalar = zad.Scalar(f64);
-
-fn f(x: *const Scalar, y: *const Scalar) Scalar {
-    const log_x = x.log();
-    const product = x.mul(y);
-    return log_x.add(&product);
-}
-
-const f_dag = zad.to_dag(f64, f);
-
-pub fn main() void {
-    var inputs = [_]f64{ 2.0, 3.0 };
-    const out = zad.eval(f64, &f_dag, &inputs);
-    std.debug.print("f = {d}\n", .{out[0]});
-}
-```
-
-## Typed Graph Builder
-
-`Scalar`, `Vec`, and `Mat` contain pointer-based graph nodes instead of DAG indexes. Graph construction therefore does not need a capacity, explicit input nodes, or explicit output nodes. `to_dag` receives a function, converts it directly to a DAG, and simplifies the result. Use `to_dag_raw` when the unsimplified graph is required.
-
-Function parameters must be `*const Scalar`, `*const Vec`, or `*const Mat`. Parameter declaration order determines DAG input order. Values inside each parameter are flattened as follows:
-
-- A `Scalar` contributes one input.
-- A `Vec(T, n)` contributes `n` inputs in element order.
-- A `Mat(T, rows, cols)` contributes `rows * cols` inputs in row-major order.
-
-Graph functions must return exactly one `Scalar` or one `Vec`. A Scalar creates one DAG output; a Vec creates one output per element in order. Returning a Mat, raw node, array, tuple, or arbitrary struct is rejected at compile time.
-
-During conversion, shared pointers are deduplicated and all value nodes are topologically ordered.
-
-Graph values are immutable construction values because operation nodes retain pointers to their operands. Bind intermediate values with `const`; do not reassign a value after another operation references it.
-
-The typed values provide scalar arithmetic, vector addition/subtraction, vector-scalar multiplication, vector dot products, and matrix-vector multiplication:
+## Quick Start
 
 ```zig
 const std = @import("std");
@@ -92,244 +26,274 @@ const Scalar = zad.Scalar(f64);
 const Vec2 = zad.Vec(f64, 2);
 const Mat2 = zad.Mat(f64, 2, 2);
 
-fn transform(x: *const Vec2, bias: *const Vec2, scale: *const Scalar) Vec2 {
-    const matrix = Mat2.c(.{
-        1.0, 2.0,
-        3.0, 4.0,
+fn quadraticProgram(x: *const Vec2) Scalar {
+    const q = Mat2.c(.{
+        .{ 1.0, 2.0 },
+        .{ 2.0, 1.0 },
     });
-    const product = matrix.matMul(x);
-    const shifted = product.add(bias);
-    return shifted.mul(scale);
+    const qx = q.matMul(x);
+    const xtqx = x.dot(&qx);
+    const two = Scalar.c(2.0);
+    return xtqx.div(&two);
 }
 
-const f_dag = zad.to_dag(f64, transform);
+const program = zad.compile(f64, quadraticProgram, .{});
+const gradient = zad.grad(f64, program, .{});
+const hessian = zad.grad(f64, gradient, .{});
 
 pub fn main() void {
-    // x, bias, scale
-    var inputs = [_]f64{ 1.0, 2.0, 10.0, 20.0, 0.5 };
-    const outputs = zad.eval(f64, &f_dag, &inputs);
-    std.debug.print("result = {any}\n", .{outputs});
+    const inputs = .{[2]f64{ 1.0, 2.0 }};
+
+    const value: f64 = zad.eval(program, inputs);
+    const grad_value: [2]f64 = zad.eval(gradient, inputs);
+    const hessian_value: [2][2]f64 = zad.eval(hessian, inputs);
+
+    std.debug.print("value={d}\n", .{value});
+    std.debug.print("gradient={any}\n", .{grad_value});
+    std.debug.print("hessian={any}\n", .{hessian_value});
 }
 ```
 
-## Gradients And Jacobians
-
-`grad` takes a DAG and a comptime options value, generates the selected Jacobian, and returns a struct containing:
-
-- `rows`: number of selected outputs
-- `cols`: number of selected inputs
-- `nodes`: a new DAG whose outputs are the Jacobian entries
-
-The Jacobian output order is row-major:
-
-```text
-d output_0 / d input_0
-d output_0 / d input_1
-...
-d output_1 / d input_0
-d output_1 / d input_1
-...
-```
-
-Example:
-
-```zig
-const g = zad.grad(f64, &f_dag, .{});
-
-var inputs = [_]f64{ 2.0, 3.0 };
-const jac = zad.eval(f64, &g.nodes, &inputs);
-
-// For f(x, y) = log(x) + x * y:
-// jac[0] = 1 / x + y
-// jac[1] = x
-```
-
-The default options select every flattened input and output, choose forward or reverse mode from the smaller selected dimension, and simplify the generated DAG:
-
-```zig
-.{
-    .wrt = .all,
-    .outputs = .all,
-    .mode = .auto,
-    .simplify = true,
-}
-```
-
-Selections support one index, a continuous range, or an explicit ordered index list:
-
-```zig
-const selected = zad.grad(f64, &f_dag, .{
-    .wrt = .{ .range = .{ .start = 0, .len = 2 } },
-    .outputs = .{ .index = 0 },
-    .mode = .reverse,
-    .simplify = false,
-});
-```
-
-Indices refer to flattened scalar inputs and outputs. `Scalar` contributes one input, `Vec(T, n)` contributes `n`, and `Mat(T, rows, cols)` contributes `rows * cols` in row-major order. Selection order determines Jacobian row and column order.
-
-Explicit index lists must contain unique indices. Missing or duplicate selected DAG output indices are rejected at compile time.
-
-`.auto` uses forward mode when fewer inputs than outputs are selected and reverse mode otherwise. `.simplify = false` skips the generic simplifier but retains local zero/one elimination performed while constructing derivatives.
-
-### Partial Gradients
-
-`examples/partial_grad.zig` defines `f(x, y) = x^T y` with two `Vec(f64, 2)` inputs and one Scalar output. Since function inputs are flattened in declaration order, `x` occupies input range `0..2` and `y` occupies `2..4`:
-
-```zig
-const grad_x = zad.grad(f64, &function_dag, .{
-    .wrt = .{ .range = .{ .start = 0, .len = 2 } },
-    .outputs = .{ .index = 0 },
-});
-
-const grad_y = zad.grad(f64, &function_dag, .{
-    .wrt = .{ .range = .{ .start = 2, .len = 2 } },
-    .outputs = .{ .index = 0 },
-});
-```
-
-Run it with:
-
-```sh
-zig build partial-grad
-```
-
-## Hessians
-
-A Hessian can be generated by differentiating a gradient DAG:
-
-```zig
-const g = zad.grad(f64, &f_dag, .{});
-const h = zad.grad(f64, &g.nodes, .{});
-```
-
-For a scalar function with `n` inputs, `h.nodes` evaluates to `n * n` outputs in row-major order.
-
-## Quadratic Example
-
-`examples/qp.zig` uses typed graph values and automatic simplification to build the model below.
-
-```text
-f(x) = 0.5 * x^T Q x
-```
-
-Then it computes:
-
-- the function value
-- the gradient
-- the Hessian
-- simplified DAG sizes
-
-Run it with:
+Run the included version with:
 
 ```sh
 zig build qp
 ```
 
-## Assembly Comparison
+## Architecture
 
-`benches/asm.zig` builds the same typed graph with `to_dag_raw` and `to_dag`, then exports handwritten, raw generated, and simplified generated evaluators. Emit optimized assembly with:
-
-```sh
-zig build bench-asm
-```
-
-The result is written to `zig-out/eval-bench.s`. The exported symbols are:
+The compilation pipeline is:
 
 ```text
-handwritten_eval_ptr
-generated_raw_eval_ptr
-generated_simplified_eval_ptr
+typed function
+    -> indexed tensor DAG
+    -> indexed tensor IR
+    -> IR optimization
+    -> IR differentiation
+    -> IR optimization
+    -> VM execution
 ```
 
-For the current benchmark, automatic simplification reduces the DAG from 14 nodes to 8. In the current Apple AArch64 `ReleaseFast` output, LLVM removes multiplication by one and double negation from the raw evaluator, but retains floating-point addition by zero:
+### Typed DAG
 
-```asm
-movi d1, #0000000000000000
-fadd d0, d0, d1
+The external DAG preserves user-level semantics:
+
+```zig
+zad.Scalar(T)
+zad.Vector(T, len) // zad.Vec alias
+zad.Matrix(T, rows, cols) // zad.Mat alias
 ```
 
-Those instructions are absent from the simplified evaluator. Exact assembly can vary by Zig version, optimization mode, and target.
+Function parameters are `*const` graph values. `to_dag` executes the function twice at compile time: a count pass assigns node indices without storage, then a build pass writes an exact-size DAG. Graph values contain stable context-local indices, so shared values and accumulator-style reassignment remain linear and do not require a user capacity.
+
+Inputs are flattened internally in function parameter order. Matrices use row-major storage, but users pass and receive nested arrays through `eval`.
+
+### Tensor IR
+
+Every IR program has one scalar type `T`; mixed f16/f32/f64 programs are rejected at compile time. The tested scalar types are f16, f32, and f64.
+
+IR nodes contain:
+
+- a tensor `Shape`
+- a scalar or SIMD `Kernel`
+- an SSA operation with references to earlier nodes
+
+The primal operation set includes:
+
+```text
+parameter, scalar_constant, tensor_constant
+unary, binary, scale, reduce_dot, mat_vec
+```
+
+Automatic differentiation can additionally generate:
+
+```text
+fill, basis, extract
+outer, transpose_mat_vec
+```
+
+These operations remain tensor-level. For example, reverse-mode differentiation of:
+
+```text
+y = A * x
+```
+
+generates:
+
+```text
+dA += outer(dy, x)
+dx += transpose_mat_vec(A, dy)
+```
+
+It does not expand the operation into a scalar DAG.
+
+### IR Optimization
+
+`compile` and `grad` optimize their generated IR by default. The current optimizer performs:
+
+- zero/one identity rewriting
+- double-negation elimination
+- common-subexpression elimination
+- output-rooted dead-code elimination
+
+Disable optimization when inspecting raw IR:
+
+```zig
+const raw = zad.compile(f32, model, .{ .optimize = false });
+const raw_grad = zad.grad(f32, raw, .{ .optimize = false });
+```
+
+### Virtual Machine
+
+The VM uses two internal stacks:
+
+```text
+scalar_stack: []T
+vector_stack: []@Vector(lanes, T)
+```
+
+Scalar nodes and scalar-backend tensors use `scalar_stack`. SIMD Vector and Matrix nodes are packed into `vector_stack`; Matrix rows are padded independently to the logical SIMD width. Intermediate SIMD operations read and write `@Vector` values directly. Array-to-vector packing happens only when loading parameters or tensor constants, and vector-to-array unpacking happens only when exporting outputs.
+
+For a function with `Vector(f32, 2)` and `Matrix(f32, 2, 2)` inputs:
+
+```zig
+const result = zad.eval(program, .{
+    [2]f32{ 1, 2 },
+    [2][2]f32{ .{ 1, 2 }, .{ 3, 4 } },
+});
+```
+
+The result type is inferred from `program.result_shape`:
+
+```text
+Scalar       -> T
+Vector(N)    -> [N]T
+Matrix(R, C) -> [R][C]T
+```
+
+`zad.eval_flat(T, program, inputs)` is available for VM testing, integration with existing flat buffers, and low-level benchmarking.
+
+`eval` uses stack storage for small programs. Programs requiring more than 1 MiB of input plus frame storage must use caller-owned workspace:
+
+```zig
+var workspace: zad.Workspace(program) = .{};
+const result = zad.eval_with_workspace(program, inputs, &workspace);
+```
+
+For large result tensors, place the result in caller-owned storage as well:
+
+```zig
+var result: zad.vm.Result(program) = undefined;
+zad.eval_into(program, inputs, &workspace, &result);
+```
+
+The flat equivalents are `eval_flat_with_workspace` and `eval_flat_into`.
+
+## SIMD Execution
+
+Vector and matrix nodes use SIMD kernels by default. The default logical vector width is 1024 bits:
+
+```text
+f16 -> @Vector(64, f16)
+f32 -> @Vector(32, f32)
+f64 -> @Vector(16, f64)
+```
+
+Zig and LLVM may split or combine this logical vector width according to the selected CPU target. Every SIMD tensor uses fixed 1024-bit chunks in `vector_stack`; the final chunk is zero-padded. Tensor kernels clear invalid padding lanes after each operation so values such as `log(0)` or `0 / 0` cannot contaminate later reductions.
+
+Configure compilation with:
+
+```zig
+const simd_program = zad.compile(f32, model, .{
+    .tensor_backend = .simd,
+    .vector_bits = 1024,
+});
+
+const scalar_program = zad.compile(f32, model, .{
+    .tensor_backend = .scalar,
+});
+```
+
+Scalar DAG nodes always use scalar storage. The backend option changes Vector and Matrix storage and execution: `.simd` uses `vector_stack`, while `.scalar` keeps every tensor element in `scalar_stack`.
+
+Transcendental vector operations such as `sin`, `log`, and `exp` depend on Zig/LLVM target lowering and may become multiple native vectors or scalar library calls.
+
+## Gradients And Jacobians
+
+`grad` differentiates an IR program, not the external typed DAG:
+
+```zig
+const derivative = zad.grad(f32, program, .{
+    .wrt = .all,
+    .outputs = .all,
+    .mode = .auto,
+    .optimize = true,
+});
+```
+
+Selections use flattened scalar indices:
+
+```zig
+const grad_x = zad.grad(f32, program, .{
+    .wrt = .{ .range = .{ .start = 0, .len = 2 } },
+    .outputs = .{ .index = 0 },
+});
+```
+
+Available selections are:
+
+```text
+.all
+.{ .index = i }
+.{ .range = .{ .start = i, .len = n } }
+.{ .indices = &.{ ... } }
+```
+
+`.auto` uses forward mode when fewer input components than output components are selected, and reverse mode otherwise. Jacobian values are emitted in row-major order.
+
+The typed result shape is:
+
+```text
+1 x 1 -> Scalar
+1 x N -> Vector(N)
+M x 1 -> Vector(M)
+M x N -> Matrix(M, N)
+```
+
+Run the two-Vector partial gradient example with:
+
+```sh
+zig build partial-grad
+```
 
 ## Public API
 
-The root module exports:
-
 ```zig
-pub const eval = @import("eval.zig").eval;
-pub const validate_dag = @import("dag.zig").validate_dag;
-pub const graph_builder = @import("graph_builder.zig");
-pub const GraphNode = graph_builder.Node;
-pub const Scalar = graph_builder.Scalar;
-pub const Vec = graph_builder.Vec;
-pub const Mat = graph_builder.Mat;
-pub const to_dag = graph_builder.to_dag;
-pub const to_dag_raw = graph_builder.to_dag_raw;
-const grad_mod = @import("grad.zig");
-pub const grad = grad_mod.grad;
-pub const GradOptions = grad_mod.GradOptions;
-pub const GradMode = grad_mod.GradMode;
-pub const GradSelection = grad_mod.GradSelection;
-pub const simplify = @import("simplify.zig").simplify;
+pub const Scalar = zad.Scalar;
+pub const Vector = zad.Vector;
+pub const Vec = zad.Vec;
+pub const Matrix = zad.Matrix;
+pub const Mat = zad.Mat;
+
+pub const to_dag = zad.to_dag;
+pub const compile = zad.compile;
+pub const grad = zad.grad;
+pub const eval = zad.eval;
+pub const eval_into = zad.eval_into;
+pub const eval_with_workspace = zad.eval_with_workspace;
+pub const eval_flat = zad.eval_flat;
+pub const eval_flat_into = zad.eval_flat_into;
+pub const eval_flat_with_workspace = zad.eval_flat_with_workspace;
+pub const Workspace = zad.Workspace;
+
+pub const dag = zad.dag;
+pub const ir = zad.ir;
+pub const ir_opt = zad.ir_opt;
+pub const ir_grad = zad.ir_grad;
+pub const vm = zad.vm;
 ```
 
-## DAG Invariants
-
-DAG nodes must only reference earlier nodes.
-
-For commutative binary operations, the project normalizes operand order:
-
-```text
-add: lhs <= rhs
-mul: lhs <= rhs
-```
-
-Non-commutative operations preserve operand order:
-
-```text
-sub: lhs - rhs
-div: lhs / rhs
-```
-
-`validate_dag` checks these invariants.
-
-## Supported Operations
-
-Unary operations:
-
-- `neg`
-- `abs`
-- `exp`
-- `log`
-- `sqrt`
-- `sin`
-- `cos`
-- `tan`
-
-Binary operations:
-
-- `add`
-- `sub`
-- `mul`
-- `div`
-
-## Notes And Limitations
-
-- `grad` supports forward, reverse, and automatic mode selection and emits a simplified Jacobian DAG by default.
-- `to_dag_raw` preserves the graph before generic simplification. Pass `.simplify = false` to `grad` to preserve its generated DAG before generic simplification.
-- The current implementation is compile-time heavy by design.
-- Larger graphs may require careful simplification to keep compile times reasonable.
-- `grad` currently supports float values and vector-of-float values.
-- Mathematical domain issues are not guarded at graph construction time:
-  - `log(x)` requires `x > 0`
-  - `sqrt(x)` requires `x >= 0`
-  - `div(x, y)` requires `y != 0`
-  - `abs(x)` is not differentiable at `x = 0`
-- `to_dag` and `grad` simplify automatically. Some algebraic rewrites may be unsafe at singular points, such as `x / x = 1`; use `to_dag_raw` or `.simplify = false` respectively when this distinction matters.
-
-## Development
-
-Useful commands:
+## Commands
 
 ```sh
 zig build test
@@ -339,8 +303,14 @@ zig build bench
 zig build bench-asm
 ```
 
-Format modified Zig files with:
+`zig build bench-asm` writes optimized assembly to `zig-out/eval-bench.s`.
 
-```sh
-zig fmt <files>
-```
+## Limitations
+
+- Graph construction and all transformations are compile-time heavy by design.
+- SIMD width is a logical IR choice; native instruction width depends on the target and optimizer.
+- SIMD reductions may use a different floating-point summation order than the scalar backend.
+- Matrix storage is row-major.
+- The current matrix primitive is matrix-vector multiplication; matrix-matrix multiplication is not implemented yet.
+- Algebraic identity optimization follows ordinary floating-point algebra and can differ at NaN, infinity, signed zero, or singular points.
+- Mathematical domain constraints such as `log(x)`, `sqrt(x)`, and division by zero are not checked during graph construction.
