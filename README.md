@@ -1,316 +1,319 @@
 # zad
 
-`zad` is a compile-time automatic differentiation library for Zig. User functions build a typed tensor DAG, which is lowered to a homogeneous floating-point IR, optimized, differentiated, and executed by a small virtual machine.
+`zad` 是一个面向 Zig 的编译时自动微分库。你可以使用接近普通数学代码的方式定义 Scalar、Vector 和 Matrix 运算，再通过 `compile` 得到可直接调用的 Zig 函数。
 
-Current version: `0.1.0`. The project targets Zig `0.16.0`.
+当前版本：`0.2.0`
 
-## Features
+要求：Zig `0.16.0`
 
-- Capacity-free function-style DAG construction.
-- Distinct `Scalar`, `Vector`, and `Matrix` semantics in the public graph.
-- One homogeneous floating-point type per DAG and IR program.
-- Native tensor IR operations including elementwise operations, dot products, matrix-vector multiplication, outer products, and transposed matrix-vector multiplication.
-- Compile-time forward- and reverse-mode IR differentiation.
-- IR identity rewriting, common-subexpression elimination, and dead-code elimination.
-- A dual-stack VM with dedicated scalar and `@Vector` storage.
-- SIMD tensor kernels by default, with a scalar backend available.
-- First and second derivatives remain tensor IR and can be optimized or differentiated again.
+## 特性
 
-## Quick Start
+- 在编译期构建、简化和微分计算图
+- 支持 `f16`、`f32` 和 `f64`
+- 支持 Scalar、Vector 和 Matrix 语义
+- 支持一阶梯度、Jacobian 和重复微分
+- 支持选择指定 input 与 output 进行微分
+- `compile` 返回可直接调用的 Zig 函数
+- 自动执行常量折叠、CSE、死代码清除和代数简化
+- Vector 使用 Zig `@Vector` 作为运行时类型
+- 不需要预先指定节点数量或 capacity
+
+## 快速开始
+
+下面定义二次函数：
+
+```text
+f(x) = x^T Q x
+```
 
 ```zig
 const std = @import("std");
 const zad = @import("zad");
 
 const Scalar = zad.Scalar(f64);
-const Vec2 = zad.Vec(f64, 2);
-const Mat2 = zad.Mat(f64, 2, 2);
+const Vec2 = zad.Vector(2, f64);
+const Mat2 = zad.Matrix(2, 2, f64);
 
-fn quadraticProgram(x: *const Vec2) Scalar {
-    const q = Mat2.c(.{
-        .{ 1.0, 2.0 },
-        .{ 2.0, 1.0 },
+fn quadratic(x: Vec2) Scalar {
+    const q = Mat2.init(.{
+        .{ 1, 0 },
+        .{ 0, 2 },
     });
-    const qx = q.matMul(x);
-    const xtqx = x.dot(&qx);
-    const two = Scalar.c(2.0);
-    return xtqx.div(&two);
+    return q.mul(x).dot(x);
 }
 
-const program = zad.compile(f64, quadraticProgram, .{});
-const gradient = zad.grad(f64, program, .{});
-const hessian = zad.grad(f64, gradient, .{});
+const f = zad.compile(quadratic);
+const gradient = zad.compile(zad.grad(quadratic, .{}));
+const hessian = zad.compile(zad.grad(zad.grad(quadratic, .{}), .{}));
 
 pub fn main() void {
-    const inputs = .{[2]f64{ 1.0, 2.0 }};
+    const x = @Vector(2, f64){ 1, 2 };
 
-    const value: f64 = zad.eval(program, inputs);
-    const grad_value: [2]f64 = zad.eval(gradient, inputs);
-    const hessian_value: [2][2]f64 = zad.eval(hessian, inputs);
+    const y = f(x);
+    const g = gradient(x);
+    const h = hessian(x);
 
-    std.debug.print("value={d}\n", .{value});
-    std.debug.print("gradient={any}\n", .{grad_value});
-    std.debug.print("hessian={any}\n", .{hessian_value});
+    std.debug.print("y = {}\n", .{y});
+    std.debug.print("gradient = {}\n", .{g});
+    std.debug.print("hessian = {}\n", .{h});
 }
 ```
 
-Run the included version with:
-
-```sh
-zig build qp
-```
-
-## Architecture
-
-The compilation pipeline is:
+结果：
 
 ```text
-typed function
-    -> indexed tensor DAG
-    -> indexed tensor IR
-    -> IR optimization
-    -> IR differentiation
-    -> IR optimization
-    -> VM execution
+y = 9
+gradient = { 2, 8 }
+hessian = .{ { 2, 0 }, { 0, 4 } }
 ```
 
-### Typed DAG
+同类完整示例位于 `examples/a.zig`。
 
-The external DAG preserves user-level semantics:
+## 定义函数
+
+函数输入可以包含任意组合的 Scalar 和 Vector：
 
 ```zig
-zad.Scalar(T)
-zad.Vector(T, len) // zad.Vec alias
-zad.Matrix(T, rows, cols) // zad.Mat alias
+const Scalar = zad.Scalar(f32);
+const Vec3 = zad.Vector(3, f32);
+
+fn transform(scale: Scalar, input: Vec3, offset: Scalar) Vec3 {
+    return scale.mul(input).add(offset);
+}
 ```
 
-Function parameters are `*const` graph values. `to_dag` executes the function twice at compile time: a count pass assigns node indices without storage, then a build pass writes an exact-size DAG. Graph values contain stable context-local indices, so shared values and accumulator-style reassignment remain linear and do not require a user capacity.
+函数可以返回：
 
-Inputs are flattened internally in function parameter order. Matrices use row-major storage, but users pass and receive nested arrays through `eval`.
+- 一个 Scalar
+- 一个 Vector
+- 由 Scalar 和 Vector 组成的非空 Tuple
 
-### Tensor IR
-
-Every IR program has one scalar type `T`; mixed f16/f32/f64 programs are rejected at compile time. The tested scalar types are f16, f32, and f64.
-
-IR nodes contain:
-
-- a tensor `Shape`
-- a scalar or SIMD `Kernel`
-- an SSA operation with references to earlier nodes
-
-The primal operation set includes:
-
-```text
-parameter, scalar_constant, tensor_constant
-unary, binary, scale, reduce_dot, mat_vec
-```
-
-Automatic differentiation can additionally generate:
-
-```text
-fill, basis, extract
-outer, transpose_mat_vec
-```
-
-These operations remain tensor-level. For example, reverse-mode differentiation of:
-
-```text
-y = A * x
-```
-
-generates:
-
-```text
-dA += outer(dy, x)
-dx += transpose_mat_vec(A, dy)
-```
-
-It does not expand the operation into a scalar DAG.
-
-### IR Optimization
-
-`compile` and `grad` optimize their generated IR by default. The current optimizer performs:
-
-- zero/one identity rewriting
-- double-negation elimination
-- common-subexpression elimination
-- output-rooted dead-code elimination
-
-Disable optimization when inspecting raw IR:
+多输出示例：
 
 ```zig
-const raw = zad.compile(f32, model, .{ .optimize = false });
-const raw_grad = zad.grad(f32, raw, .{ .optimize = false });
+const Outputs = @Tuple(&.{ Scalar, Vec3 });
+
+fn transformWithSum(scale: Scalar, input: Vec3) Outputs {
+    const result = scale.mul(input);
+    return .{ result.sum(), result };
+}
+
+const compiled = zad.compile(transformWithSum);
+
+const output = compiled(
+    2,
+    @Vector(3, f32){ 1, 2, 3 },
+);
+
+// output[0] == 12
+// output[1] == { 2, 4, 6 }
 ```
 
-### Virtual Machine
+`compile` 当前支持 0 到 8 个函数参数。
 
-The VM uses two internal stacks:
+## Scalar
+
+创建常量：
+
+```zig
+const two = Scalar.init(2);
+```
+
+支持的一元操作：
 
 ```text
-scalar_stack: []T
-vector_stack: []@Vector(lanes, T)
+neg, sqrt, exp, log, sin, cos, abs
 ```
 
-Scalar nodes and scalar-backend tensors use `scalar_stack`. SIMD Vector and Matrix nodes are packed into `vector_stack`; Matrix rows are padded independently to the logical SIMD width. Intermediate SIMD operations read and write `@Vector` values directly. Array-to-vector packing happens only when loading parameters or tensor constants, and vector-to-array unpacking happens only when exporting outputs.
-
-For a function with `Vector(f32, 2)` and `Matrix(f32, 2, 2)` inputs:
-
-```zig
-const result = zad.eval(program, .{
-    [2]f32{ 1, 2 },
-    [2][2]f32{ .{ 1, 2 }, .{ 3, 4 } },
-});
-```
-
-The result type is inferred from `program.result_shape`:
+支持的二元操作：
 
 ```text
-Scalar       -> T
-Vector(N)    -> [N]T
-Matrix(R, C) -> [R][C]T
+add, sub, mul, div, atan2
 ```
 
-`zad.eval_flat(T, program, inputs)` is available for VM testing, integration with existing flat buffers, and low-level benchmarking.
-
-`eval` uses stack storage for small programs. Programs requiring more than 1 MiB of input plus frame storage must use caller-owned workspace:
+还支持融合乘加：
 
 ```zig
-var workspace: zad.Workspace(program) = .{};
-const result = zad.eval_with_workspace(program, inputs, &workspace);
+const result = a.mulAdd(b, c); // a * b + c
 ```
 
-For large result tensors, place the result in caller-owned storage as well:
+## Vector
+
+定义类型和常量：
 
 ```zig
-var result: zad.vm.Result(program) = undefined;
-zad.eval_into(program, inputs, &workspace, &result);
+const Vec4 = zad.Vector(4, f32);
+const value = Vec4.init(.{ 1, 2, 3, 4 });
 ```
 
-The flat equivalents are `eval_flat_with_workspace` and `eval_flat_into`.
+Vector 支持：
 
-## SIMD Execution
+- 逐元素 `add`、`sub`、`mul`、`div` 和 `atan2`
+- Scalar 与 Vector 广播运算
+- `neg`、`sqrt`、`exp`、`log`、`sin`、`cos` 和 `abs`
+- `sum`
+- `dot`
+- `get`
+- `set`
+- `mulAdd`
 
-Vector and matrix nodes use SIMD kernels by default. The default logical vector width is 1024 bits:
-
-```text
-f16 -> @Vector(64, f16)
-f32 -> @Vector(32, f32)
-f64 -> @Vector(16, f64)
-```
-
-Zig and LLVM may split or combine this logical vector width according to the selected CPU target. Every SIMD tensor uses fixed 1024-bit chunks in `vector_stack`; the final chunk is zero-padded. Tensor kernels clear invalid padding lanes after each operation so values such as `log(0)` or `0 / 0` cannot contaminate later reductions.
-
-Configure compilation with:
+示例：
 
 ```zig
-const simd_program = zad.compile(f32, model, .{
-    .tensor_backend = .simd,
-    .vector_bits = 1024,
+const first = vector.get(0);
+const updated = vector.set(1, first);
+const total = updated.sum();
+```
+
+`set` 返回一个新的 Vector，不修改原值。
+
+## Matrix
+
+Matrix 当前主要用于函数内部的线性代数计算：
+
+```zig
+const Mat2 = zad.Matrix(2, 2, f64);
+
+const matrix = Mat2.init(.{
+    .{ 1, 2 },
+    .{ 3, 4 },
 });
 
-const scalar_program = zad.compile(f32, model, .{
-    .tensor_backend = .scalar,
-});
+const result = matrix.mul(vector);
 ```
 
-Scalar DAG nodes always use scalar storage. The backend option changes Vector and Matrix storage and execution: `.simd` uses `vector_stack`, while `.scalar` keeps every tensor element in `scalar_stack`.
+Matrix 支持：
 
-Transcendental vector operations such as `sin`, `log`, and `exp` depend on Zig/LLVM target lowering and may become multiple native vectors or scalar library calls.
+- `init`
+- Matrix 加法和减法
+- Scalar 缩放
+- Matrix 与 Vector 相乘
 
-## Gradients And Jacobians
+Matrix 暂时不能作为用户函数的 input 或 output，但可以在函数内部作为常量和中间计算模块。
 
-`grad` differentiates an IR program, not the external typed DAG:
+## 编译函数
+
+`compile` 在编译期完成计算图生成和优化，并返回普通 Zig 函数：
 
 ```zig
-const derivative = zad.grad(f32, program, .{
-    .wrt = .all,
-    .outputs = .all,
-    .mode = .auto,
-    .optimize = true,
-});
+const function = zad.compile(definition);
+const result = function(arguments...);
 ```
 
-Selections use flattened scalar indices:
-
-```zig
-const grad_x = zad.grad(f32, program, .{
-    .wrt = .{ .range = .{ .start = 0, .len = 2 } },
-    .outputs = .{ .index = 0 },
-});
-```
-
-Available selections are:
+运行时类型映射：
 
 ```text
-.all
-.{ .index = i }
-.{ .range = .{ .start = i, .len = n } }
-.{ .indices = &.{ ... } }
+zad.Scalar(T)      -> T
+zad.Vector(N, T)   -> @Vector(N, T)
+Tuple              -> 对应的运行时 Tuple
 ```
 
-`.auto` uses forward mode when fewer input components than output components are selected, and reverse mode otherwise. Jacobian values are emitted in row-major order.
+因此运行阶段不需要传入 builder、allocator、workspace 或图对象。
 
-The typed result shape is:
+## 自动微分
 
-```text
-1 x 1 -> Scalar
-1 x N -> Vector(N)
-M x 1 -> Vector(M)
-M x N -> Matrix(M, N)
-```
-
-Run the two-Vector partial gradient example with:
-
-```sh
-zig build partial-grad
-```
-
-## Public API
+`grad` 接收 Zig 函数或另一个 `grad` 的结果：
 
 ```zig
-pub const Scalar = zad.Scalar;
-pub const Vector = zad.Vector;
-pub const Vec = zad.Vec;
-pub const Matrix = zad.Matrix;
-pub const Mat = zad.Mat;
+const first = zad.grad(function, .{});
+const second = zad.grad(first, .{});
 
-pub const to_dag = zad.to_dag;
-pub const compile = zad.compile;
-pub const grad = zad.grad;
-pub const eval = zad.eval;
-pub const eval_into = zad.eval_into;
-pub const eval_with_workspace = zad.eval_with_workspace;
-pub const eval_flat = zad.eval_flat;
-pub const eval_flat_into = zad.eval_flat_into;
-pub const eval_flat_with_workspace = zad.eval_flat_with_workspace;
-pub const Workspace = zad.Workspace;
-
-pub const dag = zad.dag;
-pub const ir = zad.ir;
-pub const ir_opt = zad.ir_opt;
-pub const ir_grad = zad.ir_grad;
-pub const vm = zad.vm;
+const gradient = zad.compile(first);
+const hessian = zad.compile(second);
 ```
 
-## Commands
+默认对第一个 input 和第一个 output 微分。
+
+可以通过 options 选择逻辑 input 和 output：
+
+```zig
+const derivative = zad.grad(function, .{
+    .input_index = 1,
+    .output_index = 0,
+});
+
+const compiledDerivative = zad.compile(derivative);
+```
+
+索引对应函数参数和返回 Tuple 的位置，而不是 Vector 内部的 lane。
+
+导数返回类型：
+
+```text
+Scalar / Scalar -> Scalar
+Scalar / Vector -> Vector gradient
+Vector / Scalar -> Vector derivative
+Vector / Vector -> Tuple of Vector Jacobian rows
+```
+
+## IR 简化
+
+IR 在生成过程中自动简化，最终输出前还会执行一次完整简化。
+
+当前包括：
+
+- 常量折叠
+- 公共子表达式消除（CSE）
+- 死代码清除
+- `neg(neg(x)) -> x`
+- `abs(abs(x)) -> abs(x)`
+- `cos(neg(x)) -> cos(x)`
+- `log(exp(x)) -> x`
+- `x + 0 -> x`
+- `x - 0 -> x`
+- `x - x -> 0`
+- `x * 0 -> 0`
+- `x * 1 -> x`
+- `x * -1 -> neg(x)`
+- `x / 1 -> x`
+- `get(set(v, i, x), i) -> x`
+- `set(v, i, get(v, i)) -> v`
+
+这些规则也会应用于自动微分产生的 IR。
+
+## 底层接口
+
+普通用户只需要 `compile` 和 `grad`。需要直接处理 IR 时可以使用：
+
+```zig
+zad.gradIR(T, ir, input_index, output_index)
+```
+
+`gradIR` 根据逻辑 input/output index 生成新的导数 IR。生成结果仍然可以继续微分和编译。
+
+## 构建与测试
+
+运行全部测试：
 
 ```sh
 zig build test
-zig build qp
-zig build partial-grad
-zig build bench
-zig build bench-asm
 ```
 
-`zig build bench-asm` writes optimized assembly to `zig-out/eval-bench.s`.
+编译 `examples/` 下的所有可执行示例：
 
-## Limitations
+```sh
+zig build examples
+```
 
-- Graph construction and all transformations are compile-time heavy by design.
-- SIMD width is a logical IR choice; native instruction width depends on the target and optimizer.
-- SIMD reductions may use a different floating-point summation order than the scalar backend.
-- Matrix storage is row-major.
-- The current matrix primitive is matrix-vector multiplication; matrix-matrix multiplication is not implemented yet.
-- Algebraic identity optimization follows ordinary floating-point algebra and can differ at NaN, infinity, signed zero, or singular points.
-- Mathematical domain constraints such as `log(x)`, `sqrt(x)`, and division by zero are not checked during graph construction.
+编译结果位于：
+
+```text
+zig-out/bin/
+```
+
+运行当前示例：
+
+```sh
+./zig-out/bin/a
+```
+
+## 当前限制
+
+- 仅支持 f16、f32 和 f64
+- 一个函数中的所有值必须使用同一种浮点类型
+- `compile` 最多支持 8 个直接调用参数
+- Matrix 暂时不能作为函数 input 或 output
+- Vector/Vector Jacobian 返回 Vector Tuple，暂未提供专用 Matrix 返回类型
+- `abs` 在零点不可微
+- `log`、`sqrt` 和除法的定义域不会在构图时检查
+- `x * 0 -> 0`、`x - x -> 0` 等代数规则可能改变 NaN、Inf 和 signed zero 行为
