@@ -22,4 +22,5 @@ test "all" {
     _ = simplify;
     _ = differentiation;
     _ = compiler;
+    _ = @import("grad_function_test.zig");
 }

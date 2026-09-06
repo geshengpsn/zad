@@ -3,6 +3,20 @@ const hr = @import("hr.zig");
 const ir = @import("ir.zig");
 const differentiation = @import("grad.zig");
 
+const CartPoleScalar = hr.Scalar(f64);
+const CartPoleVector = hr.Vector(2, f64);
+const mass_pole = CartPoleScalar.init(1.0);
+const mass_cart = CartPoleScalar.init(5.0);
+const pole_length = CartPoleScalar.init(1.0);
+const gravity = CartPoleScalar.init(9.81);
+
+fn cartPolePotential(x: CartPoleVector, dx: CartPoleVector) CartPoleScalar {
+    _ = dx;
+    _ = mass_cart;
+    const theta = x.get(1);
+    return mass_pole.mul(gravity).mul(pole_length).mul(theta.cos());
+}
+
 pub const GradOptions = struct {
     input_index: usize = 0,
     output_index: usize = 0,
@@ -75,7 +89,7 @@ fn scalarType(comptime definition: anytype) type {
     return return_info.@"struct".fields[0].type.scalar_type;
 }
 
-pub fn grad(comptime source: anytype, comptime options: GradOptions) type {
+fn GradientDefinition(comptime source: anytype, comptime options: GradOptions) type {
     const function = baseFunction(source);
     const T = scalarType(source);
     const source_codes = comptime definitionCodes(source);
@@ -90,6 +104,81 @@ pub fn grad(comptime source: anytype, comptime options: GradOptions) type {
         pub const base_function = function;
         pub const scalar_type = T;
         pub const codes = derivative_codes;
+    };
+}
+
+fn GradFunctionType(comptime source: anytype, comptime options: GradOptions) type {
+    const info = functionInfo(baseFunction(source));
+    const Definition = GradientDefinition(source, options);
+    const R = hr.InlineResultType(Definition.scalar_type, &Definition.codes);
+    if (info.params.len == 0) @compileError("grad requires at least one function parameter");
+    if (info.params.len > 8) @compileError("grad currently supports at most 8 function parameters");
+    return switch (info.params.len) {
+        1 => fn (info.params[0].type.?) R,
+        2 => fn (info.params[0].type.?, info.params[1].type.?) R,
+        3 => fn (info.params[0].type.?, info.params[1].type.?, info.params[2].type.?) R,
+        4 => fn (info.params[0].type.?, info.params[1].type.?, info.params[2].type.?, info.params[3].type.?) R,
+        5 => fn (info.params[0].type.?, info.params[1].type.?, info.params[2].type.?, info.params[3].type.?, info.params[4].type.?) R,
+        6 => fn (info.params[0].type.?, info.params[1].type.?, info.params[2].type.?, info.params[3].type.?, info.params[4].type.?, info.params[5].type.?) R,
+        7 => fn (info.params[0].type.?, info.params[1].type.?, info.params[2].type.?, info.params[3].type.?, info.params[4].type.?, info.params[5].type.?, info.params[6].type.?) R,
+        8 => fn (info.params[0].type.?, info.params[1].type.?, info.params[2].type.?, info.params[3].type.?, info.params[4].type.?, info.params[5].type.?, info.params[6].type.?, info.params[7].type.?) R,
+        else => unreachable,
+    };
+}
+
+pub fn grad(comptime source: anytype, comptime options: GradOptions) GradFunctionType(source, options) {
+    const info = functionInfo(baseFunction(source));
+    const Definition = GradientDefinition(source, options);
+    return switch (info.params.len) {
+        1 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{a0});
+            }
+        }.call,
+        2 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1 });
+            }
+        }.call,
+        3 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?, a2: functionInfo(derivative.base_function).params[2].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1, a2 });
+            }
+        }.call,
+        4 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?, a2: functionInfo(derivative.base_function).params[2].type.?, a3: functionInfo(derivative.base_function).params[3].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1, a2, a3 });
+            }
+        }.call,
+        5 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?, a2: functionInfo(derivative.base_function).params[2].type.?, a3: functionInfo(derivative.base_function).params[3].type.?, a4: functionInfo(derivative.base_function).params[4].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1, a2, a3, a4 });
+            }
+        }.call,
+        6 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?, a2: functionInfo(derivative.base_function).params[2].type.?, a3: functionInfo(derivative.base_function).params[3].type.?, a4: functionInfo(derivative.base_function).params[4].type.?, a5: functionInfo(derivative.base_function).params[5].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1, a2, a3, a4, a5 });
+            }
+        }.call,
+        7 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?, a2: functionInfo(derivative.base_function).params[2].type.?, a3: functionInfo(derivative.base_function).params[3].type.?, a4: functionInfo(derivative.base_function).params[4].type.?, a5: functionInfo(derivative.base_function).params[5].type.?, a6: functionInfo(derivative.base_function).params[6].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1, a2, a3, a4, a5, a6 });
+            }
+        }.call,
+        8 => struct {
+            const derivative = Definition;
+            fn call(a0: functionInfo(derivative.base_function).params[0].type.?, a1: functionInfo(derivative.base_function).params[1].type.?, a2: functionInfo(derivative.base_function).params[2].type.?, a3: functionInfo(derivative.base_function).params[3].type.?, a4: functionInfo(derivative.base_function).params[4].type.?, a5: functionInfo(derivative.base_function).params[5].type.?, a6: functionInfo(derivative.base_function).params[6].type.?, a7: functionInfo(derivative.base_function).params[7].type.?) hr.InlineResultType(derivative.scalar_type, &derivative.codes) {
+                return hr.inlineIR(derivative.scalar_type, &derivative.codes, .{ a0, a1, a2, a3, a4, a5, a6, a7 });
+            }
+        }.call,
+        else => unreachable,
     };
 }
 
@@ -386,4 +475,18 @@ test "grad options select logical input and output indices" {
     const input = @Vector(2, f32){ 3, 4 };
     try std.testing.expectEqual(@Vector(2, f32){ 2, 2 }, vector_gradient(input, 2));
     try std.testing.expectEqual(@as(f32, 4), scalar_gradient(input, 2));
+}
+
+test "file-level constants work in compiled functions and gradients" {
+    const potential = compile(cartPolePotential);
+    const gradient_x = compile(grad(cartPolePotential, .{ .input_index = 0 }));
+    const gradient_dx = compile(grad(cartPolePotential, .{ .input_index = 1 }));
+    const x = @Vector(2, f64){ 0, 0.5 };
+    const dx = @Vector(2, f64){ 0, 0 };
+
+    try std.testing.expectApproxEqAbs(9.81 * @cos(0.5), potential(x, dx), 1e-12);
+    const actual_x = gradient_x(x, dx);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), actual_x[0], 1e-12);
+    try std.testing.expectApproxEqAbs(-9.81 * @sin(0.5), actual_x[1], 1e-12);
+    try std.testing.expectEqual(@Vector(2, f64){ 0, 0 }, gradient_dx(x, dx));
 }

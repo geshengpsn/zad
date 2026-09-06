@@ -234,6 +234,7 @@ pub fn Scalar(comptime T: type) type {
 }
 
 pub fn Vector(comptime len: usize, comptime T: type) type {
+    if (len < 2) @compileError("Vector length must be at least 2; use Scalar for one value");
     return struct {
         const Self = @This();
 
@@ -431,6 +432,7 @@ pub fn Vector(comptime len: usize, comptime T: type) type {
 }
 
 pub fn Matrix(comptime rows: usize, comptime cols: usize, comptime T: type) type {
+    if (rows < 2 or cols < 2) @compileError("Matrix rows and columns must both be at least 2");
     return struct {
         const Self = @This();
 
@@ -472,6 +474,172 @@ pub fn Matrix(comptime rows: usize, comptime cols: usize, comptime T: type) type
             return result;
         }
     };
+}
+
+fn irValueLen(comptime T: type, code: ir.IRCode(T)) usize {
+    return switch (code) {
+        .scalar_constant, .scalar_input_index => 1,
+        .vec_constant => |values| values.len,
+        .vec_input => |input| input.len,
+        .Op1 => |op| op.len,
+        .Op2 => |op| op.len,
+        .muladd => |op| op.len,
+        .output => 0,
+    };
+}
+
+fn outputCount(comptime T: type, comptime codes: []const ir.IRCode(T)) usize {
+    var count: usize = 0;
+    for (codes) |code| if (code == .output) {
+        count += 1;
+    };
+    return count;
+}
+
+fn outputInstruction(comptime T: type, comptime codes: []const ir.IRCode(T), comptime output_index: usize) usize {
+    var current: usize = 0;
+    for (codes) |code| switch (code) {
+        .output => |instruction| {
+            if (current == output_index) return instruction;
+            current += 1;
+        },
+        else => {},
+    };
+    @compileError("IR output index is out of bounds");
+}
+
+fn HRValueType(comptime T: type, comptime len: usize) type {
+    return if (len == 1) Scalar(T) else Vector(len, T);
+}
+
+pub fn InlineResultType(comptime T: type, comptime codes: []const ir.IRCode(T)) type {
+    const count = outputCount(T, codes);
+    if (count == 0) @compileError("inlined IR must contain at least one output");
+    if (count == 1) {
+        const instruction = outputInstruction(T, codes, 0);
+        return HRValueType(T, irValueLen(T, codes[instruction]));
+    }
+
+    var types: [count]type = undefined;
+    inline for (0..count) |index| {
+        const instruction = outputInstruction(T, codes, index);
+        types[index] = HRValueType(T, irValueLen(T, codes[instruction]));
+    }
+    return @Tuple(&types);
+}
+
+fn argumentsContext(comptime T: type, arguments: anytype) ?*Context(T) {
+    var result: ?*Context(T) = null;
+    inline for (arguments) |argument| {
+        validateBoundaryValue(T, @TypeOf(argument), "inlined IR argument");
+        if (argument.context) |context| {
+            if (result) |existing| {
+                if (existing != context) @panic("cannot inline IR with arguments from different HR contexts");
+            } else {
+                result = context;
+            }
+        }
+    }
+    return result;
+}
+
+fn constantInputs(comptime T: type, comptime codes: []const ir.IRCode(T), arguments: anytype) ir.InputType(T, codes) {
+    var result: ir.InputType(T, codes) = undefined;
+    inline for (codes) |code| switch (code) {
+        .scalar_input_index => |input_index| {
+            const argument = arguments[input_index];
+            result[input_index] = argument.constant_value orelse unreachable;
+        },
+        .vec_input => |input| {
+            const argument = arguments[input.input_index];
+            const values = argument.constant_values orelse unreachable;
+            result[input.input_index] = values;
+        },
+        else => {},
+    };
+    return result;
+}
+
+fn constantValueFromOutput(
+    comptime T: type,
+    comptime codes: []const ir.IRCode(T),
+    comptime output_index: usize,
+    value: anytype,
+) HRValueType(T, irValueLen(T, codes[outputInstruction(T, codes, output_index)])) {
+    const len = irValueLen(T, codes[outputInstruction(T, codes, output_index)]);
+    if (len == 1) return Scalar(T).init(value);
+    const array: [len]T = value;
+    return Vector(len, T).init(array);
+}
+
+fn constantInlineResult(comptime T: type, comptime codes: []const ir.IRCode(T), arguments: anytype) InlineResultType(T, codes) {
+    const values = ir.evalIRCode(T, codes, constantInputs(T, codes, arguments));
+    const count = outputCount(T, codes);
+    if (comptime count == 1) return constantValueFromOutput(T, codes, 0, values[0]);
+
+    var result: InlineResultType(T, codes) = undefined;
+    inline for (0..count) |output_index| {
+        result[output_index] = constantValueFromOutput(T, codes, output_index, values[output_index]);
+    }
+    return result;
+}
+
+fn remapIRCode(comptime T: type, code: ir.IRCode(T), map: []const usize) ir.IRCode(T) {
+    return switch (code) {
+        .Op1 => |op| .{ .Op1 = .{ .a = map[op.a], .op = op.op, .len = op.len } },
+        .Op2 => |op| .{ .Op2 = .{ .lhs = map[op.lhs], .rhs = map[op.rhs], .op = op.op, .len = op.len } },
+        .muladd => |op| .{ .muladd = .{ .a = map[op.a], .b = map[op.b], .c = map[op.c], .len = op.len } },
+        .output, .scalar_input_index, .vec_input => unreachable,
+        else => code,
+    };
+}
+
+fn valueFromIRIndex(comptime T: type, comptime codes: []const ir.IRCode(T), comptime instruction: usize, context: *Context(T), map: []const usize) HRValueType(T, irValueLen(T, codes[instruction])) {
+    const Value = HRValueType(T, irValueLen(T, codes[instruction]));
+    return Value.fromIndex(context, map[instruction]);
+}
+
+pub fn inlineIR(
+    comptime T: type,
+    comptime codes: []const ir.IRCode(T),
+    arguments: anytype,
+) InlineResultType(T, codes) {
+    const context = argumentsContext(T, arguments) orelse return constantInlineResult(T, codes, arguments);
+    var map: [codes.len]usize = undefined;
+
+    inline for (codes, 0..) |code, instruction_index| {
+        map[instruction_index] = switch (code) {
+            .scalar_input_index => |input_index| blk: {
+                if (input_index >= arguments.len) @compileError("inlined scalar input index is out of bounds");
+                const argument = arguments[input_index];
+                if (comptime @TypeOf(argument).value_kind != .scalar) @compileError("inlined scalar input type mismatch");
+                break :blk argument.resolve(context);
+            },
+            .vec_input => |input| blk: {
+                if (input.input_index >= arguments.len) @compileError("inlined Vector input index is out of bounds");
+                const argument = arguments[input.input_index];
+                if (comptime @TypeOf(argument).value_kind != .vector or @TypeOf(argument).length != input.len) {
+                    @compileError("inlined Vector input type mismatch");
+                }
+                break :blk argument.resolve(context);
+            },
+            .output => continue,
+            else => context.append(remapIRCode(T, code, &map)),
+        };
+    }
+
+    const count = outputCount(T, codes);
+    if (comptime count == 1) {
+        const instruction = outputInstruction(T, codes, 0);
+        return valueFromIRIndex(T, codes, instruction, context, &map);
+    }
+
+    var result: InlineResultType(T, codes) = undefined;
+    inline for (0..count) |output_index| {
+        const instruction = outputInstruction(T, codes, output_index);
+        result[output_index] = valueFromIRIndex(T, codes, instruction, context, &map);
+    }
+    return result;
 }
 
 fn functionInfo(comptime function: anytype) std.builtin.Type.Fn {

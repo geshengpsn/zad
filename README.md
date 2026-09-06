@@ -1,26 +1,31 @@
 # zad
 
-`zad` 是一个面向 Zig 的编译时自动微分库。你可以使用接近普通数学代码的方式定义 Scalar、Vector 和 Matrix 运算，再通过 `compile` 得到可直接调用的 Zig 函数。
+![中文](https://img.shields.io/badge/README-中文-red.svg)
 
-当前版本：`0.2.0`
+`zad` is a compile-time automatic differentiation library for Zig. Define computations with Scalar, Vector, and Matrix values, then use `compile` to obtain ordinary callable Zig functions.
 
-要求：Zig `0.16.0`
+Current version: `0.2.0`
 
-## 特性
+Requires Zig `0.16.0`.
 
-- 在编译期构建、简化和微分计算图
-- 支持 `f16`、`f32` 和 `f64`
-- 支持 Scalar、Vector 和 Matrix 语义
-- 支持一阶梯度、Jacobian 和重复微分
-- 支持选择指定 input 与 output 进行微分
-- `compile` 返回可直接调用的 Zig 函数
-- 自动执行常量折叠、CSE、死代码清除和代数简化
-- Vector 使用 Zig `@Vector` 作为运行时类型
-- 不需要预先指定节点数量或 capacity
+## Features
 
-## 快速开始
+- Compile-time graph construction, simplification, and differentiation
+- `f16`, `f32`, and `f64` support
+- Scalar, Vector, and Matrix operations
+- Gradients, Jacobians, and repeated differentiation
+- Selectable input and output differentiation
+- Callable functions returned by `compile`
+- Callable gradient functions that can be reused inside other graph definitions
+- Constant folding, CSE, dead-code elimination, and algebraic simplification
+- Zig `@Vector` runtime values
+- No graph capacity declaration required
 
-下面定义二次函数：
+
+
+## Quick Start
+
+This example defines:
 
 ```text
 f(x) = x^T Q x
@@ -59,7 +64,7 @@ pub fn main() void {
 }
 ```
 
-结果：
+Expected values:
 
 ```text
 y = 9
@@ -67,11 +72,11 @@ gradient = { 2, 8 }
 hessian = .{ { 2, 0 }, { 0, 4 } }
 ```
 
-同类完整示例位于 `examples/a.zig`。
+A similar executable example is available in `examples/a.zig`.
 
-## 定义函数
+## Defining Functions
 
-函数输入可以包含任意组合的 Scalar 和 Vector：
+Graph functions may accept any combination of Scalar and Vector arguments:
 
 ```zig
 const Scalar = zad.Scalar(f32);
@@ -82,13 +87,13 @@ fn transform(scale: Scalar, input: Vec3, offset: Scalar) Vec3 {
 }
 ```
 
-函数可以返回：
+A graph function may return:
 
-- 一个 Scalar
-- 一个 Vector
-- 由 Scalar 和 Vector 组成的非空 Tuple
+- one Scalar
+- one Vector
+- a non-empty Tuple containing Scalar and Vector values
 
-多输出示例：
+Multiple outputs are represented with a Tuple:
 
 ```zig
 const Outputs = @Tuple(&.{ Scalar, Vec3 });
@@ -109,55 +114,55 @@ const output = compiled(
 // output[1] == { 2, 4, 6 }
 ```
 
-`compile` 当前支持 0 到 8 个函数参数。
+`compile` supports 0 to 8 function arguments. Callable functions returned by `grad` support 1 to 8 arguments.
 
 ## Scalar
 
-创建常量：
+Create constants with `init`:
 
 ```zig
 const two = Scalar.init(2);
 ```
 
-支持的一元操作：
+Unary operations:
 
 ```text
 neg, sqrt, exp, log, sin, cos, abs
 ```
 
-支持的二元操作：
+Binary operations:
 
 ```text
 add, sub, mul, div, atan2
 ```
 
-还支持融合乘加：
+Fused multiply-add is also available:
 
 ```zig
 const result = a.mulAdd(b, c); // a * b + c
 ```
 
+
+
 ## Vector
 
-定义类型和常量：
+Define a Vector type and constant value:
 
 ```zig
 const Vec4 = zad.Vector(4, f32);
 const value = Vec4.init(.{ 1, 2, 3, 4 });
 ```
 
-Vector 支持：
+Vector supports:
 
-- 逐元素 `add`、`sub`、`mul`、`div` 和 `atan2`
-- Scalar 与 Vector 广播运算
-- `neg`、`sqrt`、`exp`、`log`、`sin`、`cos` 和 `abs`
+- element-wise `add`, `sub`, `mul`, `div`, and `atan2`
+- Scalar-to-Vector broadcasting
+- `neg`, `sqrt`, `exp`, `log`, `sin`, `cos`, and `abs`
 - `sum`
 - `dot`
 - `get`
 - `set`
 - `mulAdd`
-
-示例：
 
 ```zig
 const first = vector.get(0);
@@ -165,11 +170,11 @@ const updated = vector.set(1, first);
 const total = updated.sum();
 ```
 
-`set` 返回一个新的 Vector，不修改原值。
+`set` returns a new Vector and does not mutate its source.
 
 ## Matrix
 
-Matrix 当前主要用于函数内部的线性代数计算：
+Matrix is currently intended for constants and intermediate linear algebra inside graph functions:
 
 ```zig
 const Mat2 = zad.Matrix(2, 2, f64);
@@ -182,37 +187,37 @@ const matrix = Mat2.init(.{
 const result = matrix.mul(vector);
 ```
 
-Matrix 支持：
+Matrix supports:
 
 - `init`
-- Matrix 加法和减法
-- Scalar 缩放
-- Matrix 与 Vector 相乘
+- Matrix addition and subtraction
+- Scalar scaling
+- Matrix-Vector multiplication
 
-Matrix 暂时不能作为用户函数的 input 或 output，但可以在函数内部作为常量和中间计算模块。
+Matrix cannot currently be used as a graph function input or output.
 
-## 编译函数
+## Compiling Functions
 
-`compile` 在编译期完成计算图生成和优化，并返回普通 Zig 函数：
+`compile` constructs and optimizes the graph at compile time and returns an ordinary Zig function:
 
 ```zig
 const function = zad.compile(definition);
 const result = function(arguments...);
 ```
 
-运行时类型映射：
+Runtime type mapping:
 
 ```text
-zad.Scalar(T)      -> T
-zad.Vector(N, T)   -> @Vector(N, T)
-Tuple              -> 对应的运行时 Tuple
+zad.Scalar(T)    -> T
+zad.Vector(N, T) -> @Vector(N, T)
+Tuple            -> corresponding runtime Tuple
 ```
 
-因此运行阶段不需要传入 builder、allocator、workspace 或图对象。
+No builder, allocator, workspace, or graph object is required at runtime.
 
-## 自动微分
+## Automatic Differentiation
 
-`grad` 接收 Zig 函数或另一个 `grad` 的结果：
+`grad` accepts a graph function or another function returned by `grad`:
 
 ```zig
 const first = zad.grad(function, .{});
@@ -222,9 +227,22 @@ const gradient = zad.compile(first);
 const hessian = zad.compile(second);
 ```
 
-默认对第一个 input 和第一个 output 微分。
+Gradient functions are regular HR functions and can be called inside another graph definition:
 
-可以通过 options 选择逻辑 input 和 output：
+```zig
+const gradientFunction = zad.grad(function, .{});
+
+fn gradientEnergy(x: Vec2) Scalar {
+    const gradient = gradientFunction(x);
+    return gradient.dot(gradient);
+}
+
+const compiled = zad.compile(gradientEnergy);
+```
+
+This makes gradients, Jacobian rows, and higher-order derivatives reusable graph modules.
+
+By default, `grad` differentiates the first output with respect to the first input. Select logical input and output positions with options:
 
 ```zig
 const derivative = zad.grad(function, .{
@@ -235,26 +253,45 @@ const derivative = zad.grad(function, .{
 const compiledDerivative = zad.compile(derivative);
 ```
 
-索引对应函数参数和返回 Tuple 的位置，而不是 Vector 内部的 lane。
+Indices refer to function argument and output Tuple positions, not Vector lanes.
 
-导数返回类型：
+Derivative result types:
 
 ```text
-Scalar / Scalar -> Scalar
-Scalar / Vector -> Vector gradient
-Vector / Scalar -> Vector derivative
-Vector / Vector -> Tuple of Vector Jacobian rows
+Scalar output / Scalar input -> Scalar
+Scalar output / Vector input -> Vector gradient
+Vector output / Scalar input -> Vector derivative
+Vector output / Vector input -> Tuple of Vector Jacobian rows
 ```
 
-## IR 简化
 
-IR 在生成过程中自动简化，最终输出前还会执行一次完整简化。
 
-当前包括：
+## File-Level Constants
 
-- 常量折叠
-- 公共子表达式消除（CSE）
-- 死代码清除
+Scalar, Vector, and Matrix constants may be declared outside graph functions:
+
+```zig
+const Scalar = zad.Scalar(f64);
+const Vec2 = zad.Vector(2, f64);
+
+const mass = Scalar.init(1.0);
+const gravity = Scalar.init(9.81);
+
+fn potential(x: Vec2) Scalar {
+    const theta = x.get(1);
+    return mass.mul(gravity).mul(theta.cos());
+}
+```
+
+File-level constants participate normally in graph construction, simplification, compilation, and differentiation.
+
+## IR Simplification
+
+IR is simplified while it is generated and once more before it is returned. Current rules include:
+
+- constant folding
+- common-subexpression elimination (CSE)
+- dead-code elimination
 - `neg(neg(x)) -> x`
 - `abs(abs(x)) -> abs(x)`
 - `cos(neg(x)) -> cos(x)`
@@ -269,51 +306,57 @@ IR 在生成过程中自动简化，最终输出前还会执行一次完整简�
 - `get(set(v, i, x), i) -> x`
 - `set(v, i, get(v, i)) -> v`
 
-这些规则也会应用于自动微分产生的 IR。
+The same rules are applied to IR generated by automatic differentiation.
 
-## 底层接口
+## Low-Level Differentiation
 
-普通用户只需要 `compile` 和 `grad`。需要直接处理 IR 时可以使用：
+Most users only need `compile` and `grad`. Direct IR differentiation is available through:
 
 ```zig
 zad.gradIR(T, ir, input_index, output_index)
 ```
 
-`gradIR` 根据逻辑 input/output index 生成新的导数 IR。生成结果仍然可以继续微分和编译。
+`gradIR` returns another IR value that can be differentiated or compiled again.
 
-## 构建与测试
+## Build And Test
 
-运行全部测试：
+Run all tests:
 
 ```sh
 zig build test
 ```
 
-编译 `examples/` 下的所有可执行示例：
+Compile every executable under `examples/`:
 
 ```sh
 zig build examples
 ```
 
-编译结果位于：
+Compiled examples are installed in:
 
 ```text
 zig-out/bin/
 ```
 
-运行当前示例：
+Run the current example:
 
 ```sh
 ./zig-out/bin/a
 ```
 
-## 当前限制
 
-- 仅支持 f16、f32 和 f64
-- 一个函数中的所有值必须使用同一种浮点类型
-- `compile` 最多支持 8 个直接调用参数
-- Matrix 暂时不能作为函数 input 或 output
-- Vector/Vector Jacobian 返回 Vector Tuple，暂未提供专用 Matrix 返回类型
-- `abs` 在零点不可微
-- `log`、`sqrt` 和除法的定义域不会在构图时检查
-- `x * 0 -> 0`、`x - x -> 0` 等代数规则可能改变 NaN、Inf 和 signed zero 行为
+
+## Current Limitations
+
+- Only f16, f32, and f64 are supported
+- All values in one graph function must use the same floating-point type
+- `compile` supports at most 8 direct-call arguments
+- Callable gradient functions support 1 to 8 arguments
+- Vector length must be at least 2; use Scalar for one value
+- Matrix cannot currently be used as a function input or output
+- Matrix row and column counts must both be at least 2
+- Vector/Vector Jacobians are returned as Tuples of Vector rows
+- `abs` is not differentiable at zero
+- Domains for `log`, `sqrt`, and division are not checked during graph construction
+- Algebraic rules such as `x * 0 -> 0` and `x - x -> 0` may change NaN, infinity, and signed-zero behavior
+
