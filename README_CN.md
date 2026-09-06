@@ -293,10 +293,12 @@ IR 在生成过程中自动简化，最终输出前还会执行一次完整简�
 普通用户只需要 `compile` 和 `grad`。需要直接处理 IR 时可以使用：
 
 ```zig
-zad.gradIR(T, ir, input_index, output_index)
+const source = zad.toIRCode(function);
+const derivative = zad.gradIR(T, &source, input_index, output_index);
+const value = zad.evalIRCode(T, &derivative, inputs);
 ```
 
-`gradIR` 根据逻辑 input/output index 生成新的导数 IR。生成结果仍然可以继续微分和编译。
+`gradIR` 根据逻辑 input/output index 生成新的导数 IR。生成结果可以继续传给 `gradIR`、使用 `simplifyIR` 简化，或通过 `evalIRCode` 执行。
 
 ## 构建与测试
 
