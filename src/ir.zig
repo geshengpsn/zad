@@ -352,6 +352,8 @@ fn evalMulAdd(comptime T: type, comptime Result: type, a: anytype, b: anytype, c
 }
 
 pub fn evalIRCode(comptime T: type, comptime ir: []const IRCode(T), input: InputType(T, ir)) OutputType(T, ir) {
+    // Unrolling large IRs and resolving workspace indices exceeds the default quota.
+    @setEvalBranchQuota(10_000_000);
     var workspace: Workspace(T, ir) = undefined;
     var result: OutputType(T, ir) = undefined;
     comptime var output_index: usize = 0;
@@ -444,6 +446,23 @@ test "evalIRCode" {
     inline for (0..3) |index| {
         try std.testing.expectApproxEqAbs(expected[index], result[1][index], 1e-12);
     }
+}
+
+test "evalIRCode handles long instruction chains without a caller branch quota" {
+    const operation_count = 128;
+    const test_ir = comptime blk: {
+        var codes: [operation_count + 3]IRCode(f64) = undefined;
+        codes[0] = .{ .scalar_constant = 1 };
+        codes[1] = .{ .scalar_input_index = 0 };
+        for (2..codes.len - 1) |index| {
+            codes[index] = .{ .Op2 = .{ .lhs = index - 1, .rhs = 0, .op = .add, .len = 1 } };
+        }
+        codes[codes.len - 1] = .{ .output = codes.len - 2 };
+        break :blk codes;
+    };
+
+    const result = evalIRCode(f64, &test_ir, .{3.0});
+    try std.testing.expectEqual(@as(f64, 131), result[0]);
 }
 
 test "evalIRCode builds vec_constant from a constant slice" {

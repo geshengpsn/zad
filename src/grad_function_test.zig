@@ -126,3 +126,84 @@ test "grad callable wrapper supports eight parameters" {
     const derivative = compiler.compile(compiler.grad(sumEight, .{ .input_index = 7 }));
     try std.testing.expectEqual(@as(f64, 1), derivative(1, 2, 3, 4, 5, 6, 7, 8));
 }
+
+test "cartpole DEL Jacobian composes nested gradients" {
+    const CartPole = struct {
+        const mass_cart = Scalar.init(5.0);
+        const h = Scalar.init(0.01);
+
+        fn kinetic(x: Vec2, dx: Vec2) Scalar {
+            const theta = x.get(1);
+            const sin_theta = theta.sin();
+            const cos_theta = theta.cos();
+            const x_dot = dx.get(0);
+            const theta_dot = dx.get(1);
+            const half = Scalar.init(0.5);
+            const cart = half.mul(mass_cart).mul(x_dot).mul(x_dot);
+            var pole_vel = Vec2.init(.{ 0, 0 });
+            pole_vel = pole_vel.set(0, x_dot.add(pole_length.mul(cos_theta).mul(theta_dot)));
+            pole_vel = pole_vel.set(1, pole_length.mul(sin_theta).mul(theta_dot).neg());
+            const pole = half.mul(mass_pole).mul(pole_vel.dot(pole_vel));
+            return cart.add(pole);
+        }
+
+        fn lagrangian(x: Vec2, dx: Vec2) Scalar {
+            return kinetic(x, dx).sub(potential(x, dx));
+        }
+
+        fn discreteLagrangian(x1: Vec2, x2: Vec2) Scalar {
+            const dx = x2.sub(x1).div(h);
+            const x = x1.add(x2).mul(Scalar.init(0.5));
+            return lagrangian(x, dx).mul(h);
+        }
+
+        const d2_ld = compiler.grad(discreteLagrangian, .{ .input_index = 1 });
+        const d1_ld = compiler.grad(discreteLagrangian, .{ .input_index = 0 });
+
+        fn del(x1: Vec2, x2: Vec2, x3: Vec2) Vec2 {
+            return d2_ld(x1, x2).add(d1_ld(x2, x3));
+        }
+    };
+
+    const del_function = compiler.compile(CartPole.del);
+    const d3_del = compiler.compile(compiler.grad(CartPole.del, .{ .input_index = 2 }));
+    const cases = [2][3]@Vector(2, f64){
+        .{ .{ 0, 0.1 }, .{ 0, 0.1 }, .{ 0, 0.1 } },
+        .{ .{ -0.03, 0.08 }, .{ 0.02, 0.12 }, .{ 0.05, 0.14 } },
+    };
+    for (cases, 0..) |points, case_index| {
+        const x1 = points[0];
+        const x2 = points[1];
+        const x3 = points[2];
+        const jacobian = d3_del(x1, x2, x3);
+        const u = (x3[0] - x2[0]) / 0.01;
+        const w = (x3[1] - x2[1]) / 0.01;
+        const c = @cos((x2[1] + x3[1]) / 2);
+        const s = @sin((x2[1] + x3[1]) / 2);
+        const expected: [2][2]f64 = if (case_index == 0)
+            .{
+                .{ -600, -99.50041652780259 },
+                .{ -99.50041652780259, -99.97559752284656 },
+            }
+        else
+            .{
+                .{ -600, -c / 0.01 + s * w / 2 },
+                .{ -c / 0.01 - s * w / 2, -100 + 0.01 * c * (9.81 - u * w) / 4 },
+            };
+
+        const epsilon = 1e-6;
+        inline for (0..2) |column| {
+            var plus = x3;
+            var minus = x3;
+            plus[column] += epsilon;
+            minus[column] -= epsilon;
+            const del_plus = del_function(x1, x2, plus);
+            const del_minus = del_function(x1, x2, minus);
+            inline for (0..2) |row| {
+                try std.testing.expectApproxEqAbs(expected[row][column], jacobian[row][column], 1e-9);
+                const difference = (del_plus[row] - del_minus[row]) / (2 * epsilon);
+                try std.testing.expectApproxEqAbs(difference, jacobian[row][column], 1e-5);
+            }
+        }
+    }
+}

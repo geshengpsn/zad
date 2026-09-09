@@ -20,5 +20,5 @@ pub fn main() void {
     const hess = qp_hess(x);
     std.debug.print("y = {}\n", .{y});
     std.debug.print("grad = {}\n", .{grad});
-    std.debug.print("hess = {}\n", .{@TypeOf(hess)});
+    std.debug.print("hess = {}\n", .{hess});
 }

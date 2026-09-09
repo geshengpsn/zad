@@ -96,7 +96,14 @@ pub fn Builder(comptime T: type) type {
         }
 
         fn findEquivalent(self: *Self, comptime code: ir.IRCode(T)) ?usize {
-            for (self.codes[0..self.len], 0..) |existing, index| {
+            // An equivalent operation must also follow all of its operands.
+            const start = switch (code) {
+                .Op1 => |op| op.a + 1,
+                .Op2 => |op| @as(usize, @max(op.lhs, op.rhs)) + 1,
+                .muladd => |op| @as(usize, @max(op.a, op.b, op.c)) + 1,
+                else => 0,
+            };
+            for (self.codes[start..self.len], start..) |existing, index| {
                 if (sameCode(T, existing, code)) return index;
             }
             return null;
@@ -141,7 +148,10 @@ pub fn Builder(comptime T: type) type {
                     if (element_index >= operand_len) @compileError("get index is out of bounds");
                     if (operand == .vec_constant) return self.append(.{ .scalar_constant = operand.vec_constant[element_index] });
                     if (operand == .Op2) switch (operand.Op2.op) {
-                        .set => |set_index| if (set_index == element_index) return operand.Op2.rhs,
+                        .set => |set_index| {
+                            if (set_index == element_index) return operand.Op2.rhs;
+                            return self.append(.{ .Op1 = .{ .a = operand.Op2.lhs, .op = operation.op, .len = 1 } });
+                        },
                         else => {},
                     };
                 },
@@ -418,6 +428,53 @@ test "Builder simplifies while generating IR" {
     };
     try std.testing.expectEqual(result.x, result.restored);
     try std.testing.expectEqual(@as(usize, 4), result.len);
+}
+
+test "Builder deduplicates operations immediately after their operands" {
+    const result = comptime blk: {
+        var storage: [8]ir.IRCode(f64) = undefined;
+        var builder = Builder(f64).init(&storage, true);
+        _ = builder.append(.{ .scalar_input_index = 0 });
+        const operations = [_]ir.IRCode(f64){
+            .{ .Op1 = .{ .a = 0, .op = .neg, .len = 1 } },
+            .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .sub, .len = 1 } },
+            .{ .muladd = .{ .a = 0, .b = 1, .c = 2, .len = 1 } },
+        };
+        for (operations) |code| _ = builder.append(code);
+        var indices: [operations.len]usize = undefined;
+        for (operations, 0..) |code, index| indices[index] = builder.append(code);
+        break :blk .{ .indices = indices, .len = builder.len };
+    };
+    try std.testing.expectEqual([3]usize{ 1, 2, 3 }, result.indices);
+    try std.testing.expectEqual(@as(usize, 4), result.len);
+}
+
+test "Builder simplifies get through unrelated sets during creation" {
+    inline for (.{ f16, f32, f64 }) |T| {
+        const result = comptime blk: {
+            var storage: [16]ir.IRCode(T) = undefined;
+            var builder = Builder(T).init(&storage, true);
+            const vector = builder.append(.{ .vec_input = .{ .input_index = 0, .len = 3 } });
+            const scalar = builder.append(.{ .scalar_input_index = 1 });
+            const original = builder.append(.{ .Op1 = .{ .a = vector, .op = .{ .get = 0 }, .len = 1 } });
+            const first = builder.append(.{ .Op2 = .{ .lhs = vector, .rhs = scalar, .op = .{ .set = 1 }, .len = 3 } });
+            const second = builder.append(.{ .Op2 = .{ .lhs = first, .rhs = scalar, .op = .{ .set = 2 }, .len = 3 } });
+            const len_before = builder.len;
+            const unchanged = builder.append(.{ .Op1 = .{ .a = second, .op = .{ .get = 0 }, .len = 1 } });
+            const changed = builder.append(.{ .Op1 = .{ .a = second, .op = .{ .get = 1 }, .len = 1 } });
+            break :blk .{
+                .original = original,
+                .scalar = scalar,
+                .unchanged = unchanged,
+                .changed = changed,
+                .len_before = len_before,
+                .len_after = builder.len,
+            };
+        };
+        try std.testing.expectEqual(result.original, result.unchanged);
+        try std.testing.expectEqual(result.scalar, result.changed);
+        try std.testing.expectEqual(result.len_before, result.len_after);
+    }
 }
 
 test "simplifyIR rewrites references and preserves evaluation" {
