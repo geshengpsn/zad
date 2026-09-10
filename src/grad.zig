@@ -252,39 +252,35 @@ fn buildGradient(
     return builder.len;
 }
 
-fn generatedGradientLen(
-    comptime T: type,
-    comptime source: []const ir.IRCode(T),
-    comptime input_index: usize,
-    comptime output_index: usize,
-) usize {
-    @setEvalBranchQuota(10_000_000);
-    var storage: [gradientCapacity(T, source, output_index)]ir.IRCode(T) = undefined;
-    return buildGradient(T, source, input_index, output_index, &storage);
-}
-
-fn generatedGradient(
-    comptime T: type,
-    comptime source: []const ir.IRCode(T),
-    comptime input_index: usize,
-    comptime output_index: usize,
-) [generatedGradientLen(T, source, input_index, output_index)]ir.IRCode(T) {
-    @setEvalBranchQuota(10_000_000);
-    var storage: [gradientCapacity(T, source, output_index)]ir.IRCode(T) = undefined;
-    const len = buildGradient(T, source, input_index, output_index, &storage);
-    return storage[0..len].*;
-}
-
-fn gradientType(
+fn GradientIR(
     comptime T: type,
     comptime source: []const ir.IRCode(T),
     comptime input_index: usize,
     comptime output_index: usize,
 ) type {
     @setEvalBranchQuota(10_000_000);
-    const generated = comptime generatedGradient(T, source, input_index, output_index);
-    const result = comptime simplify.simplifyIR(T, &generated);
-    return @TypeOf(result);
+    // A type cannot capture pointers to the caller's mutable comptime storage.
+    const source_codes = blk: {
+        var codes = source[0..source.len].*;
+        for (&codes) |*code| {
+            if (code.* != .vec_constant) continue;
+            const values = code.vec_constant[0..code.vec_constant.len].*;
+            code.* = .{ .vec_constant = &struct {
+                const data = values;
+            }.data };
+        }
+        break :blk codes;
+    };
+    return struct {
+        // Keep the generated prefix instead of rebuilding it after counting.
+        const generated = blk: {
+            @setEvalBranchQuota(10_000_000);
+            var storage: [gradientCapacity(T, &source_codes, output_index)]ir.IRCode(T) = undefined;
+            const len = buildGradient(T, &source_codes, input_index, output_index, &storage);
+            break :blk storage[0..len].*;
+        };
+        const codes = simplify.simplifyIR(T, &generated);
+    };
 }
 
 pub fn gradIR(
@@ -292,10 +288,8 @@ pub fn gradIR(
     comptime source: []const ir.IRCode(T),
     comptime input_index: usize,
     comptime output_index: usize,
-) gradientType(T, source, input_index, output_index) {
-    @setEvalBranchQuota(10_000_000);
-    const generated = comptime generatedGradient(T, source, input_index, output_index);
-    return comptime simplify.simplifyIR(T, &generated);
+) @TypeOf(GradientIR(T, source, input_index, output_index).codes) {
+    return GradientIR(T, source, input_index, output_index).codes;
 }
 
 test "scalar output differentiates with respect to selected Scalar input" {
@@ -308,6 +302,38 @@ test "scalar output differentiates with respect to selected Scalar input" {
     const derivative = comptime gradIR(f64, &source, 0, 0);
     const result = ir.evalIRCode(f64, &derivative, .{ 2, 3 });
     try @import("std").testing.expectEqual(@as(f64, 3), result[0]);
+}
+
+test "gradIR accepts mutable comptime source storage" {
+    const derivative = comptime blk: {
+        var source: [3]ir.IRCode(f64) = undefined;
+        source[0] = .{ .scalar_input_index = 0 };
+        source[1] = .{ .Op2 = .{ .lhs = 0, .rhs = 0, .op = .mul, .len = 1 } };
+        source[2] = .{ .output = 1 };
+        break :blk gradIR(f64, &source, 0, 0);
+    };
+    try @import("std").testing.expectEqual(@as(f64, 6), ir.evalIRCode(f64, &derivative, .{3})[0]);
+}
+
+test "gradIR observes changes to mutable comptime vector constants" {
+    const result = comptime blk: {
+        var constants = [_]f64{ 2, 3 };
+        var source = [_]ir.IRCode(f64){
+            .{ .vec_input = .{ .input_index = 0, .len = 2 } },
+            .{ .vec_constant = &constants },
+            .{ .Op2 = .{ .lhs = 0, .rhs = 1, .op = .mul, .len = 2 } },
+            .{ .Op1 = .{ .a = 2, .op = .sum, .len = 1 } },
+            .{ .output = 3 },
+        };
+        const first = gradIR(f64, &source, 0, 0);
+        const first_value = ir.evalIRCode(f64, &first, .{@Vector(2, f64){ 1, 1 }})[0];
+        constants[0] = 5;
+        const second = gradIR(f64, &source, 0, 0);
+        const second_value = ir.evalIRCode(f64, &second, .{@Vector(2, f64){ 1, 1 }})[0];
+        break :blk .{ first_value, second_value };
+    };
+    try @import("std").testing.expectEqual(@Vector(2, f64){ 2, 3 }, result[0]);
+    try @import("std").testing.expectEqual(@Vector(2, f64){ 5, 3 }, result[1]);
 }
 
 test "scalar output differentiates with respect to selected Vector input" {

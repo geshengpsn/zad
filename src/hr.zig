@@ -745,43 +745,25 @@ fn rawIRCodeLen(comptime function: anytype) usize {
     return context.len();
 }
 
-fn generatedIRLen(comptime function: anytype) usize {
-    @setEvalBranchQuota(1_000_000);
-    const T = functionScalarType(function);
-    var codes: [rawIRCodeLen(function)]ir.IRCode(T) = undefined;
-    var context = Context(T).init(&codes, true);
-    var storage: FunctionStorage(function) = undefined;
-    const result = runFunction(function, &context, &storage);
-    appendOutputs(T, &context, result);
-    return context.len();
-}
-
-fn generatedIR(comptime function: anytype) [generatedIRLen(function)]ir.IRCode(functionScalarType(function)) {
-    return comptime blk: {
-        @setEvalBranchQuota(1_000_000);
+fn FunctionIR(comptime function: anytype) type {
+    return struct {
         const T = functionScalarType(function);
-        const len = generatedIRLen(function);
-        var codes: [len]ir.IRCode(T) = undefined;
-        var context = Context(T).init(&codes, true);
-        var storage: FunctionStorage(function) = undefined;
-        const result = runFunction(function, &context, &storage);
-        appendOutputs(T, &context, result);
-        if (context.len() != len) @compileError("HR function changed between count and build passes");
-        break :blk codes;
+        // Materialize once; type queries and callers share the same IR.
+        const generated = blk: {
+            @setEvalBranchQuota(1_000_000);
+            var buffer: [rawIRCodeLen(function)]ir.IRCode(T) = undefined;
+            var context = Context(T).init(&buffer, true);
+            var storage: FunctionStorage(function) = undefined;
+            const result = runFunction(function, &context, &storage);
+            appendOutputs(T, &context, result);
+            break :blk buffer[0..context.len()].*;
+        };
+        const codes = simplify.simplifyIR(T, &generated);
     };
 }
 
-fn simplifiedIRType(comptime function: anytype) type {
-    const T = functionScalarType(function);
-    const generated = comptime generatedIR(function);
-    const result = comptime simplify.simplifyIR(T, &generated);
-    return @TypeOf(result);
-}
-
-pub fn toIRCode(comptime function: anytype) simplifiedIRType(function) {
-    const T = functionScalarType(function);
-    const generated = comptime generatedIR(function);
-    return comptime simplify.simplifyIR(T, &generated);
+pub fn toIRCode(comptime function: anytype) @TypeOf(FunctionIR(function).codes) {
+    return FunctionIR(function).codes;
 }
 
 test "Scalar and Vector HR lower to executable IR" {
